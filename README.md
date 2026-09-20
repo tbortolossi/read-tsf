@@ -33,7 +33,7 @@ Restart Claude Code, then point it at an archive:
 
 ```bash
 claude plugin marketplace update tbortolossi
-claude plugin update read-tsf
+claude plugin update read-tsf@tbortolossi
 ```
 
 Updates take effect after a restart.
