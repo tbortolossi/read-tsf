@@ -46,8 +46,11 @@ Updates take effect after a restart.
 - **An inventory pass** — where the bytes are, which planes exist, and the
   time window each log's rotations actually cover, so that a file nobody
   opens is a file somebody decided not to open.
-- **A symptom → file → grep map** — VPN, HA, GlobalProtect, routing, sessions,
-  dataplane, management plane, crashes, log forwarding.
+- **A symptom → file → grep map** — sixteen domains, each with what to read
+  first, what to read next, and what the lines mean: VPN, HA, GlobalProtect,
+  authentication, User-ID, crashes and reboots, CPU, memory, drops and
+  buffers, interfaces, disk, routing, commits, content updates, log
+  forwarding, Panorama.
 - **Log-file aliases** — the name a log has on disk is rarely the name a PAN-OS
   engineer uses for it.
 - **Reading heuristics** — counter methods, how to tell a sampled series from a

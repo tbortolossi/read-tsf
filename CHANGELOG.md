@@ -6,6 +6,12 @@ version follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `README.md` described the symptom map as covering "sessions" and
+  "management plane", which are not rows of it, and omitted seven that are.
+  It now names the sixteen domains the table actually holds.
+
 ## [1.1.1] — 2026-09-20
 
 ### Fixed
