@@ -5,7 +5,7 @@ description: >
   task involves a techsupport .tgz or an extracted TSF tree — diagnosing a
   firewall problem (VPN, HA, GlobalProtect, crash, CPU, drops…), finding the
   right log for a symptom, or answering "what happened on this device".
-  Distilled from TAC-MAN's tsf-agent (file map, log aliases, L3 doctrine).
+  Carries the file map, the log aliases and the L3 reading doctrine.
 ---
 
 # Reading a PAN-OS tech support file
@@ -35,7 +35,15 @@ Anchor on three facts before anything else:
 
 1. **Device time and timezone** (`show clock`, e.g. `Sun Apr 5 09:36:57 CEST 2026`).
    Every log line in the TSF is in that timezone with **no offset written**.
-   Convert before correlating with anything external.
+   Convert before correlating with anything external. Whether that clock
+   *held still* is in `var/log/ntpstats/` — `loopstats` is one line per NTP
+   update (`MJD  seconds-of-day  offset_s  drift_ppm  …`) and `peerstats`
+   the same per peer, with its address. The date is a **Modified Julian
+   Day**: `date -d "1858-11-17 + <MJD> days"` (`61135` = 2026-04-05). A
+   sub-millisecond `offset_s` throughout means every timestamp in the
+   archive is comparable; an offset jumping to seconds, or the files ending
+   days before the TSF, means the clock stepped and cross-source
+   correlation has to be re-based around that step.
 2. **PAN-OS version, model, serial, uptime, HA state** (`show system info`).
    Uptime shorter than the problem's age = there was a reboot → check crashes
    first, whatever the reported symptom.
@@ -62,6 +70,34 @@ A fourth fact worth one grep before diving into any symptom:
 **expired licence** (Threat Prevention, URL, GlobalProtect, support…)
 explains many "it stopped working on <date>" reports, and no daemon log
 says so as plainly.
+
+## Step 0b — inventory before you read anything
+
+A TSF is ~500 files and the map below covers the ones that answer questions.
+Take thirty seconds to see what *this* archive actually holds, so that a file
+you never open is a file you decided not to open:
+
+```bash
+find . -type f -printf '%10s  %p\n' | sort -rn | head -40          # where the bytes are
+ls var/log/pan/ | sed -E 's/(\.log)?(\.[0-9]+)?(\.gz|\.zip|\.old)?$//' | sort -u | wc -l
+ls -d opt/dpfs opt/var.dp* opt/var/s*/dp* opt/var/s*/lfp* opt/var.cp opt/var/s*/cp 2>/dev/null
+find . -type f -size 0 | wc -l                                    # a zero-byte log is a daemon that never spoke
+```
+
+The third line is the plane layout (step 2b) — and a directory can exist
+empty, so list its files before rerouting the analysis into it. Then bound
+the history you have, per daemon that matters, before you grep inside it:
+
+```bash
+for f in var/log/pan/<daemon>.log*; do echo "$f: $(zcat -f "$f" | head -1 | cut -c1-19) -> $(zcat -f "$f" | tail -1 | cut -c1-19)"; done
+```
+
+If the failure minute is outside every window, say so and stop looking —
+that is a finding ("the archive does not cover the incident"), not an
+absence of evidence. A file left unread should fall into one of five
+reasons: outside the time window · wrong plane · a vendor database
+(the traps section) · binary with a text twin · a domain the symptom excludes.
+Anything else is a file you have not accounted for.
 
 ## Step 1 — the reading order that works
 
@@ -113,11 +149,18 @@ ls var/log/pan/ | grep -E "^ikemgr|^keymgr|^dnsproxy"   # see what exists, read 
 ```
 
 **The failure window is often only in a rotation.** `<d>.log` is live,
-`<d>.log.old` / `.1` / `.2` older, `.gz` compressed. A chatty daemon rotates
-the interesting hour away before the TSF is generated. Search them all:
+`<d>.log.old` / `.1` / `.2` older (`.log.0.gz` exists too — 0 is not the
+live file), `.gz` compressed. **`var/log/nginx/` rotates to `.zip`**, not
+`.gz`: `sslvpn_access.log.1.zip` … `.12.zip`. Single-member deflate, so
+`zcat -f` and `zgrep` do read them, but `unzip -l` is what names the member
+inside — it keeps its original name (`…/sslvpn_access.log.old`) and its
+listed date is the end of the window that file covers. A chatty daemon
+rotates the interesting hour away before the TSF is generated. Search them
+all:
 
 ```bash
 zgrep -h "<pattern>" var/log/pan/ikemgr-ng.log* var/log/pan/ikemgr.log* 2>/dev/null | sort | head -50
+unzip -l var/log/nginx/sslvpn_access.log.*.zip   # which window is in which rotation
 ```
 
 Timestamps sort textually within one format, but formats differ per file —
@@ -138,10 +181,10 @@ pick the right grep):
 |---|---|---|
 | PAN standard: `YYYY-MM-DD HH:MM:SS.mmm +ZZZZ` | `2026-04-05 05:57:32.225 +0200 Error: pan_cfg…(file.c:647): msg` | most of `var/log/pan/`: configd, authd, sysd, useridd, routed, mprelay, devsrv, ha_agent… The `func(file.c:line):` prefix is grep-able and names the code path. |
 | ikemgr-ng: `YYYY:MM:DDTHH:MM:SS.mmm+ZZ:ZZ` | `2026:03:01T15:13:18.024+01:00 [4371-4442] [INFO]: …` | `ikemgr-ng.log`, `keymgr-ng.log` — **colons in the date**: a `2026-03-01` grep finds nothing here. `[pid-tid]` follows. (10.2's `ikemgr.log` is PAN standard.) |
-| JSON lines | `{"level":"info","time":"2026-03-01T15:13:17.65+01:00","message":"…"}` | `gpsvc.log`, `wifgo*.log`, `gp_broker` parts, `logging-services*.log` — use `jq -r` or grep the `"message"` value; `"level":"error"` filters. |
+| JSON lines | `{"level":"info","time":"2026-03-01T15:13:17.65+01:00","message":"…"}` | `gpsvc.log`, `wifgo*.log`, `gp_broker` parts, `logging-services*.log`, `icd.log`, `dscd.log` — use `jq -r` or grep the `"message"` value; `"level":"error"` filters. **`"time"` is not always RFC 3339**: `icd_dp.log` writes `{"level":"error","time":"Apr  4 11:59:01.401",…}` — JSON envelope, yearless syslog clock inside, so any `jq 'select(.time > "2026-…")'` silently matches nothing. |
 | syslog, **yearless** | `Mar  1 06:12:39 <host> kernel: […] msg` | `var/log/messages`, `tmp/cli/logs/show_log_journal.txt` (12.x only) — no year: infer it from the TSF window; day-of-month is space-padded (`Mar  1` = two spaces). |
 | audit key=value, **epoch** | `type=USER_AUTH msg=audit(1774665326.812:16547): … acct="x" exe="/usr/bin/su"` | `var/log/audit/audit.log*` — the only time is the epoch inside `audit(…)`: `date -d @1774665326`. |
-| nginx access | `IP - - [01/Mar/2026:15:20:33 +0100] "GET /x" 200 …` | `var/log/nginx/{access,error,api_metrics,l3svc_access}.log`. Two look-alikes with their own shape: `mgmt_httpd_access.log` is **status-first, no client IP** — `200 [01/Mar/2026:15:14:17 +0100] 0 26 /robots.txt "python-requests/2.25.1"`; `sslvpn-access/sslvpn-access.log` (a *directory*, present only when GP is configured) is `IP   [2026-03-01 15:47:36.311249739 +0100 CET] POST /global-protect/prelogin.esp HTTP/1.1 153 200 595, taskid 1`. |
+| nginx access | `IP - - [01/Mar/2026:15:20:33 +0100] "GET /x" 200 …` | `var/log/nginx/{access,error,api_metrics,l3svc_access,restapi_metrics}.log`, and `l3svc_ngx_error.log` in `var/log/pan/` (nginx error shape, `[info]`/`[notice]` only unless the cloud-services front end failed). Three look-alikes with their own shape: `mgmt_httpd_access.log` is **status-first, no client IP** — `200 [01/Mar/2026:15:14:17 +0100] 0 26 /robots.txt "python-requests/2.25.1"`; `sslvpn-access/sslvpn-access.log` (a *directory*, present only when GP is configured) is `IP   [2026-03-01 15:47:36.311249739 +0100 CET] POST /global-protect/prelogin.esp HTTP/1.1 153 200 595, taskid 1`; and `var/log/nginx/sslvpn_access.log` is a **longer nginx shape with client and server ports** — `127.0.0.1 39260 - 127.0.0.1 20077 [01/Mar/2026:15:17:03 +0100] "GET /sslvpn_ngx_status HTTP/1.1" 200 97 "-" "Wget/1.21.1" 1772374623.816 0.000 - 1` (the trailing fields are epoch, request duration, upstream, connection number). |
 | bracketed | `[2026-03-30 00:00:00.001 INF] msg` | dated plugin logs (`opt/plugins/var/log/pan/plugin-adem-YYYYMMDD.log`); `plugin_dlp.log` / `plugin_client.log` next to them are PAN standard. |
 | periodic dump | a timestamp line, then a raw command dump (netstat, counters), repeated | `md_out.log` (netstat every few min, records glued without separators), `evtmgr_*_snapshot` (counter tables, few timestamps), `req_stats.log`. Diff two dumps rather than reading one. |
 
@@ -204,7 +247,7 @@ have several planes:
   analyse **per plane, never the aggregate** — on a PA-7000 the classic
   finding is one line card at 90 % while the others idle (traffic imbalance),
   invisible in any average. Do not assume which planes exist from the model:
-  tsf-agent's note said a PA-5250 skips dp1, but a real PA-5250 on 11.2 had
+  an earlier note said a PA-5250 skips dp1, but a real PA-5250 on 11.2 had
   `opt/var.dp0`, `opt/var.dp1` and `opt/var.dp2` all populated (~80 files
   each: `dp-monitor.log` + rotations, `dp-sessperf_mon.log`, `brdagent.log`,
   `bfd.log`, `cgroups*.log`). `ls -d opt/var.dp*` is the only reliable answer;
@@ -283,32 +326,37 @@ have several planes:
 are useful for every symptom. `sdb.txt` is a flat dump of dotted keys —
 `sys.s1.info.model: PA-440`, `sys.s1.dp0.*`, HA/hardware/version state —
 so `grep '^sys\.' sdb.txt | grep -i <topic>` answers "what does the box think
-its own state is" without parsing anything. Then, per domain (P0 files first
-— this is tsf-agent's own priority map):
+its own state is" without parsing anything. Then, per domain, P0 files
+first:
 
 | symptom | read first | then | grep for / interpret |
 |---|---|---|---|
-| **VPN site-à-site** | `ikemgr-ng.log`* | `keymgr*.log`, `> show vpn ike-sa / ipsec-sa / flow` | `failed to get sainfo`=Phase2 proxy-ID mismatch · `no proposal chosen`=no common crypto · `AUTHENTICATION_FAILED`=PSK (case-sensitive!) or cert · `TS_UNACCEPTABLE`=IKEv2 selector mismatch · SPI mismatch=peer rebooted, stale SA · `DPD: peer dead`=connectivity, NOT negotiation. Phase 1 must establish before any Phase 2 diagnosis. |
+| **VPN site-to-site** | `ikemgr-ng.log`* | `keymgr*.log`, `> show vpn ike-sa / ipsec-sa / flow` | `failed to get sainfo`=Phase2 proxy-ID mismatch · `no proposal chosen`=no common crypto · `AUTHENTICATION_FAILED`=PSK (case-sensitive!) or cert · `TS_UNACCEPTABLE`=IKEv2 selector mismatch · SPI mismatch=peer rebooted, stale SA · `DPD: peer dead`=connectivity, NOT negotiation. Phase 1 must establish before any Phase 2 diagnosis. |
 | **HA / failover** | `ha_agent.log`, `> show high-availability all` | `path-monitoring`, `state-synchronization`, `brdagent.log`; `saved-configs/.ha-remote-rc.xml` = the **peer's** running config, for a config-sync mismatch (`diff <(xmllint --format running-config.xml) <(xmllint --format .ha-remote-rc.xml)`) | Classify the cause: heartbeat_loss (HA1 flap/peer down) · link_monitoring (NIC → check failure-condition any/all) · path_monitoring · **commit within 120 s of failover = spurious** (commits pause heartbeats 5–15 s) · process_restart. Preemption disabled = no auto-failback. |
-| **GlobalProtect** | `gpsvc.log`, `show_log_globalprotect.txt` (one row per portal/gateway event — columns: time, gateway/portal, status, event, region, `domain\user`; can be the biggest text file of the TSF, 64 MB seen: grep it by user or by status, never open it), `gp_broker.log` | `sslvpn-access/sslvpn-access.log` (+ `.N.gz` rotations — a **directory** that exists only when a portal/gateway is configured; the `sslvpn-task.log*` beside it are binary), `sslvpn_ngx_error.log`, `rasmgr.log` | Split by WHERE the client stops: portal (config fetch) → auth → gateway (tunnel) → data. `Authentication failed` in gpsvc = **not a GP problem**, pivot to authd. Portal-vs-gateway auth-profile mismatch = auth OK then fails seconds later. |
-| **Auth** | `authd.log`, `useridd.log` | `show_log_system.txt`, `sslmgr.log` (certs) | LDAP `rc=49`=bad bind credentials; RADIUS timeouts; SAML clock skew. **An exposed GP portal is brute-forced**: `grep -c "failed authentication for user" tmp/cli/logs/show_log_system.txt` then `grep -o "for user '[^']*'" … \| sort \| uniq -c \| sort -rn \| head` — guessed names (`error`, `request`, `port`, `cli`, `usr`, `test`, `admin`) and one source IP per burst are a scanner, not a customer problem; the `From:` IP of the same lines in `authd.log` says where it comes from. Real users fail with their real names, a few times, from a few IPs. |
+| **GlobalProtect** | `gpsvc.log`, `show_log_globalprotect.txt` (one row per portal/gateway event — columns: time, gateway/portal, status, event, region, `domain\user`; can be the biggest text file of the TSF, 64 MB seen: grep it by user or by status, never open it), `gp_broker.log` | `sslvpn-access/sslvpn-access.log` (+ `.N.gz` rotations — a **directory** that exists only when a portal/gateway is configured; the `sslvpn-task.log*` beside it are binary), `sslvpn_ngx_error.log`, `rasmgr.log`, `var/log/nginx/sslvpn_access.log` (+ `.N.zip`) | Split by WHERE the client stops: portal (config fetch) → auth → gateway (tunnel) → data. `Authentication failed` in gpsvc = **not a GP problem**, pivot to authd. Portal-vs-gateway auth-profile mismatch = auth OK then fails seconds later. |
+| **Auth** | `authd.log`, `useridd.log` | `show_log_system.txt`, `sslmgr.log` (certs), `sysdagent.log` (`MONITOR: Certificate expiry check completed. Expired certificates found: N` — a dated count, the cheapest proof that a cert-related failure had already started), `cryptod.log` (master-key and keystore: `Id:<name> not found in keystore` breaks whatever consumes that secret) | LDAP `rc=49`=bad bind credentials; RADIUS timeouts; SAML clock skew. **An exposed GP portal is brute-forced**: `grep -c "failed authentication for user" tmp/cli/logs/show_log_system.txt` then `grep -o "for user '[^']*'" … \| sort \| uniq -c \| sort -rn \| head` — guessed names (`error`, `request`, `port`, `cli`, `usr`, `test`, `admin`) and one source IP per burst are a scanner, not a customer problem; the `From:` IP of the same lines in `authd.log` says where it comes from. Real users fail with their real names, a few times, from a few IPs. |
 | **User-ID** | `useridd.log`, `distributord.log` | `> show user ip-user-mapping-mp all` (the MP's table), `> show user user-id-agent statistics` | Identification ≠ authentication: nobody fails a login, policy just mis-applies / user shows `unknown`. A login failing = auth domain instead. |
-| **Crash / reboot** | `var/cores/crashinfo/` (per DP on a chassis, step 1), `opt/panrepo/logs/reboot.log`, `sysd.log` | `messages`, `mce.log` (not on every model), `opt/panrepo/logs/{bios,history,swm}.log`, the console logs (step 2b) | `grep -E "panic|oops|segfault|watchdog|Killed process"`. PID change in `mp-monitor.log` = daemon restart without reboot. **After any upgrade, check for crashes even if the symptom isn't crash-shaped.** |
+| **Crash / reboot** | `var/cores/crashinfo/` (per DP on a chassis, step 1), `opt/panrepo/logs/reboot.log`, `sysd.log` | `messages`, `var/log/dmesg` (the kernel ring buffer as it stood at generation — the boot's hardware inventory, and any post-boot kernel error), `var/log/syslog-system`, `mce.log` (not on every model), `opt/panrepo/logs/{bios,history,swm,bts,infra-debug}.log`, the console logs (step 2b) | `grep -E "panic|oops|segfault|watchdog|Killed process"`. PID change in `mp-monitor.log` = daemon restart without reboot. **After any upgrade, check for crashes even if the symptom isn't crash-shaped.** |
 | **CPU** | `dp-monitor.log`, `mp-monitor.log`, `> show running resource-monitor` | `var/log/sa/sar*` (31-day history) | DP CPU = traffic-side (sessions, decryption, App-ID); MP CPU = reports/logging/configd. DP > 80 % sustained 3+ snapshots = critical. Correlate spikes with commits/content updates. |
 | **Memory** | `mp-monitor.log` (`memory`, `memory_detail`, `top_summary`/`pidstat` per PID) | `grep -E "Out of memory\|oom-killer" var/log/messages*` — `> show system resources` is **not** in the command dump on any of ten TSFs (10.2 → 12.1); it is a live-device command, the monitor log is its history | Growth across 3+ snapshots is the signal, never one reading. Linux cache ≠ pressure. LEAK (one RSS rising) vs LOAD (tracks sessions/tunnels) vs steady-high (benign). A leaking daemon is a future-crashing daemon. |
 | **Drops / perf / buffers** | `> show counter global filter delta yes`, `> show running resource-monitor` | `dp-monitor.log`, `> show session info`, `> debug dataplane pool statistics`, `> show zone-protection` | See the buffers/PBP/counters section below. Read `drop`/`error` severities first; the **delta** section says what happens now. `flow_policy_deny`+`tcp_rst_from_self`=policy RST · `flow_fwd_mtu_exceeded`+`ip_df_drop`=MTU in tunnel path (big packets fail, ping works) · `flow_tcp_non_syn` right after failover is EXPECTED. Depleted DP pools drop silently. |
-| **Interfaces** | `> show interface all`, `pan_ifmgr.log` | `brdagent.log` (port/ASIC), `l2ctrld.log`, `> show system environmentals` (temperature, fans, PSU — a port that flaps with a failed fan or PSU is a hardware case) | Physical first — it invalidates every higher-layer diagnosis on the path. CRC/FCS on one port=cable/SFP · late collisions=duplex mismatch · `dot1q_tag_err`=VLAN arriving on a port not carrying it. |
-| **Disk** | `> show system disk-space`, `> show system logdb-quota` (per-log-type quota vs usage — a log type at 100 % is purging by design, not full) | `logpurger.log`, `messages` | WHICH partition decides the cause: /var/log=logrotate stuck (du≠df = deleted-fd) or forgotten debug level · /opt/panrepo=old images (safe cleanup) · /opt/panlogs=at quota by design, only purge *errors* matter · root full=the dangerous one (commits fail). Cores on disk = pivot to crash, don't delete them. |
-| **Routing** | `routed.log` or `var/log/pan/frr/` + `etc/frr/` | `> show routing route` / `> show advanced-routing …`, `bfd.log` | Advanced-routing engine = FRR (`advanced-routing: on` in `show system info`); legacy = routed. Check which one owns the config. On an ARE box every classic section (`> show routing route`, `… fib`, `… protocol ospf/bgp …`) is present but answers only `Command deprecated in Advanced Routing Mode` — an empty grep there means *wrong mode*, pivot to the ~50 `> show advanced-routing …` sections. `var/log/pan/frr/frr_export.log` exists on every box (even with ARE off); with ARE **on** there is one `ns<N>_frr_export.log` / `ns<N>_frr_reload.log` per logical router (header `#LR:<name> (<n>)`, then FRR-style `YYYY/MM/DD HH:MM:SS ZEBRA: …` lines) plus `are_migration.log`. **Routing over time**: the RIB dates every learned route (`age` column, both formats — `age 2036` = that path (re)installed 34 min before the snapshot); `routed.log`+`.log.old` (~20 h) date the churn — `TM_SPF: start full SPF calculation` (each = a topology change, thousands on an unstable network), `MON: status update monitor(vr X: a > b) Down/Up` (path-monitor flaps toggling static routes), HA status events; the OSPF LSDB adds per-LSA `Age` and a high `Seq Number` (`0x8000BB9A` ≈ 48 k re-originations) as a churn fingerprint. What the TSF does NOT have: per-prefix add/delete lines at default verbosity, and the system logdb (`opt/panlogs` ships nearly empty; no `> show log system` section) — you can date *when* paths changed, not replay *what the previous path was*; correlate with traffic/tunnel logs for that. |
+| **Interfaces** | `> show interface all`, `pan_ifmgr.log`, `qtrace_routed.log` | `brdagent.log` (port/ASIC), `l2ctrld.log`, `> show system environmentals` (temperature, fans, PSU — a port that flaps with a failed fan or PSU is a hardware case) | Physical first — it invalidates every higher-layer diagnosis on the path. CRC/FCS on one port=cable/SFP · late collisions=duplex mismatch · `dot1q_tag_err`=VLAN arriving on a port not carrying it. `qtrace_routed.log` is where an interface flap is *dated to the millisecond* and counted: `grep -c "ifmon_process_hwifstate" ` then `grep "pan_routed_ifstate_down" ` for the per-transition list (16 k transitions on one interface over three weeks is the whole finding), and `pan_routed_set_ospf_seq_number` in the same file counts the OSPF re-originations that flap caused. Interfaces are numbered, not named (`Interface:17`) — map them with `> show interface all`. |
+| **Disk** | `> show system disk-space`, `> show system logdb-quota` (per-log-type quota vs usage — a log type at 100 % is purging by design, not full) | `logpurger.log`, `messages`, `sysdagent.log` (`MONITOR: Disk space check` runs on a timer — the dated series before the snapshot), `raid.log` (models with a disk pair), `opt/panrepo/logs/disk-migration.log` (partition resize at upgrade) | WHICH partition decides the cause: /var/log=logrotate stuck (du≠df = deleted-fd) or forgotten debug level · /opt/panrepo=old images (safe cleanup) · /opt/panlogs=at quota by design, only purge *errors* matter · root full=the dangerous one (commits fail). Cores on disk = pivot to crash, don't delete them. |
+| **Routing** | `routed.log` or `var/log/pan/frr/` + `etc/frr/` | `> show routing route` / `> show advanced-routing …`, `bfd.log`, `qtrace_routed.log` (routed's own function-level trace, `NNNNNNNN [YYYY-MM-DD HH:MM:SS.tttt] [func:line]` — see the interfaces row) | Advanced-routing engine = FRR (`advanced-routing: on` in `show system info`); legacy = routed. Check which one owns the config. On an ARE box every classic section (`> show routing route`, `… fib`, `… protocol ospf/bgp …`) is present but answers only `Command deprecated in Advanced Routing Mode` — an empty grep there means *wrong mode*, pivot to the ~50 `> show advanced-routing …` sections. `var/log/pan/frr/frr_export.log` exists on every box (even with ARE off); with ARE **on** there is one `ns<N>_frr_export.log` / `ns<N>_frr_reload.log` per logical router (header `#LR:<name> (<n>)`, then FRR-style `YYYY/MM/DD HH:MM:SS ZEBRA: …` lines) plus `are_migration.log`. **Routing over time**: the RIB dates every learned route (`age` column, both formats — `age 2036` = that path (re)installed 34 min before the snapshot); `routed.log`+`.log.old` (~20 h) date the churn — `TM_SPF: start full SPF calculation` (each = a topology change, thousands on an unstable network), `MON: status update monitor(vr X: a > b) Down/Up` (path-monitor flaps toggling static routes), HA status events; the OSPF LSDB adds per-LSA `Age` and a high `Seq Number` (`0x8000BB9A` ≈ 48 k re-originations) as a churn fingerprint. What the TSF does NOT have: per-prefix add/delete lines at default verbosity, and the system logdb (`opt/panlogs` ships nearly empty; no `> show log system` section) — you can date *when* paths changed, not replay *what the previous path was*; correlate with traffic/tunnel logs for that. |
 | **Commit / config** | `configd.log`, `show_log_config.txt`, `commit_stats.log` (12.x only) | `cfg-audit.xml,v`, `> show jobs processed` | `commit_stats.log` has per-phase durations (Jobid/Start/Fin blocks); on 10.2–11.2 the durations are in `show jobs processed` and `configd.log` only. |
 | **Content / AV updates** | `paninstaller_content.log`, `contentd.log` | `opt/pancfg/mgmt/global/*info.xml` | Correlate the update **time** with the symptom start before blaming it. |
-| **Panorama** | `devsrv.log`, `ms.log` | `opt/pancfg/mgmt/tmp/panorama_pushed/` (`lastsp.xml`, `newsp.xml`, `mergesp.xml`, `predefined.xml`, `pushsp.xml`, `sp-push-request.xml`, `tpl-push-request.xml`; `before|after-sp-imported.xml` on 12.x) | `running-config.xml` alone is incomplete on managed devices — use `.merged-running-config.xml`. |
+| **Log forwarding** | `logrcvr.log` (MP side), `varrcvr.log` (URL/WildFire/pcap), `> show logging-status` | `logging-services*.log`, `logpurger.log`; **to the cloud**: `icd.log` + `icd_dp.log`; on a PA-7000 all of it lives on the log processing cards, `opt/var/s<slot>/lfp<n>/log/pan/` (step 2b), not in `var/log/pan/` | Separate *where* it stops: DP→MP (`logrcvr`), MP→disk (`logdb`, quota — see Disk), MP→destination. For Strata Logging Service / Cortex Data Lake the destination side is `icd*`, JSON lines: `icd.log` is the control path — its certificate-chain checks name the **region** the device ships to (`CN=ingest.<region>.prd.strata.logging.paloaltonetworks.com`) — and `icd_dp.log` is the data path, which logs **only warnings and errors**, one per failed stream: `dpi nonack stream[0:N] failed to send ingestion request, EOF` and `rpc error: code = Unavailable … reset reason: overflow` = the firewall is not delivering its logs to the cloud. Tens of thousands of those lines is a silent, total forwarding outage that no other file reports; count them per day before blaming the collector. |
+| **Panorama** | `devsrv.log`, `ms.log` | `opt/pancfg/mgmt/tmp/panorama_pushed/` (`lastsp.xml`, `newsp.xml`, `mergesp.xml`, `predefined.xml`, `pushsp.xml`, `sp-push-request.xml`, `tpl-push-request.xml`; `before|after-sp-imported.xml` on 12.x), `opt/pancfg/mgmt/{template,sp}/` | `running-config.xml` alone is incomplete on managed devices — use `.merged-running-config.xml`. **Is this device in sync?** `opt/pancfg/mgmt/template/push-version.txt` (the push it holds) against `p-push-version.txt` (the one before) and `opt/pancfg/mgmt/sp/vsys1/push-version.txt` (shared policy) — plain integers, e.g. `14022`/`14021`/`14015`; `push-checksum.txt` is the md5 of the pushed blob, and `template-config-audit.xml,v` / `sp-config-audit.xml,v` are the RCS histories of the pushed template and policy, the Panorama-side twin of `cfg-audit.xml,v`. |
 
 \* alias rule of step 2 applies.
 
-Secondary domains not tabled here — WildFire, URL filtering, QoS, SD-WAN,
-DLP, App-ID, DNS/DHCP, licences — follow the same method; their per-problem
-log map is in [TSF-GUIDE.md](TSF-GUIDE.md) §4.
+Secondary domains follow the same method and are tabled in
+[TSF-GUIDE.md](TSF-GUIDE.md) §4: WildFire, cloud forwarding, SNMP, device
+health monitors, certificates/keystore, MP↔DP plumbing, daemon supervision,
+time sync, SD-WAN/LSVPN, IoT, directory sync, DNS/DHCP, reports, plugins.
+**URL filtering, QoS and App-ID have no daemon log of their own** in any
+TSF of the corpus — their evidence is counters, the config, and the content
+version, not a file to grep.
 
 ## Buffers, packet-buffer protection and counters — the silent-drop toolkit
 
@@ -574,6 +622,15 @@ points: `TSF-GUIDE.md` §5. Two specifics:
   `last-candidatecfg-audit.xml,v` (RCS history of every *candidate*, tens of
   MB — `cfg-audit.xml,v` is the one with the commits) — are almost never the
   answer; don't burn context reading them.
+- **A log name from a cheat sheet is not evidence that the file exists.**
+  Published PAN-OS log lists circulate with names that appear on **no**
+  10.2–12.1 TSF in this corpus: `masterd.log` / `masterd_detail.log` (the
+  supervision trail is `sysd.log`, `supervisor.log` and
+  `md-startscript.log`), `pan_bc_download.log`, `logcvr.log` / `varcvr.log`
+  (typos of `logrcvr` / `varrcvr`), `ha-agent.log` (it is `ha_agent.log`)
+  and `userid.log` (it is `useridd.log`). `pan_packet_diag.log` is real but
+  rare. Reporting "the log is missing" from such a name invents a symptom —
+  `ls var/log/pan/ | grep -i <daemon>` first, always.
 - **Binary files** (`rule-hit-count.bin`, `wtmp`/`btmp`/`lastlog`,
   `var/log/sa/sa*`, `var/log/pan/sslvpn-access/sslvpn-task.log*.gz` — one
   serialized `GpTaskStat` record per GP request: task id, vsys, source IP,
@@ -584,38 +641,31 @@ points: `TSF-GUIDE.md` §5. Two specifics:
 ## Anonymized TSFs
 
 A TSF produced by [tsf-anonymizer](https://github.com/tbortolossi/tsf-anonymizer)
-keeps layout, line counts,
-timestamps, counters, interface names and built-ins; identifiers are replaced
-consistently (same original → same pseudonym everywhere): `100.64.x.y` was a
-private IP, `192.0.2.x`/`198.51.100.x`/`203.0.113.x` public, `hostNNN[.anon.internal]`
-a hostname, `userNNN` a user, `ZONE-0012`/`RULE-0045`/`GW-0002`… named objects
-(prefix = category), same-length digits starting `9` a serial. Correlation
-still works — "peer `203.0.113.7` on `GW-0002`" is the same peer everywhere.
-Member names are rewritten with the same mapping — the command dump reads
-`tmp/cli/techsupport_host001_<date>.txt`. Binary members that embedded
-identifiers are, **by default**, replaced by the one-line
-`[tsf-anonymizer] binary payload redacted…`: expect it in `var/log/sa/saNN`
-(read the `sarNN` text twins instead), `rule-hit-count.bin` (use
-`rule-hit-count-db.txt`), `sslvpn-access/sslvpn-task.log*` (use
-`show_log_globalprotect.txt`) and `var/log/wtmp`/`btmp`/`lastlog` — the
-admin login history, which has no twin: for "who logged in, when, from
-where" use `show_log_system.txt` (`grep -i "logged in\|auth"`) and
-`authd.log`. The original is gone from the archive, not hidden. The
-`*.mapping.json` sidecar reverses it all and must never travel with the
-anonymized archive.
+keeps layout, line counts, timestamps, counters, interface names and
+built-ins; only identifiers change, and always consistently — so every
+correlation in this file still works ("peer `203.0.113.7` on `GW-0002`" is
+the same peer everywhere), including inside member names
+(`tmp/cli/techsupport_host001_<date>.txt`). The pseudonym-to-category table
+is in [TSF-GUIDE.md](TSF-GUIDE.md) §7. Three things that change how you read:
 
-Over-anonymization seen on archives made by **older versions** of tsf-anonymizer:
-common English words replaced inside command echoes and fixed output
-(`> show chassis inventory` → `> show chassis user72321`, `Connection
-status: up` → `user51283`, the `install` verb in
-`opt/panrepo/logs/history.log`), and interface names pseudonymized inside
-zone `<member>` elements. Both are fixed — a bare common English word is no
-longer an identity in any category, and an interface name is never a FQDN —
-but a copy you are handed may predate the fix. Layout and numbers always
-survive, so analysis works either way: **prefer structural greps (section
-markers, counter names, `X/Y` fractions) over long fixed English strings**,
-and on an old copy treat an empty fixed-string grep as possibly mangled,
-not absent.
+- **Redacted binaries.** By default a binary member that embedded
+  identifiers becomes the one line `[tsf-anonymizer] binary payload
+  redacted…`. Use the text twin: `sarNN` for `var/log/sa/saNN`,
+  `rule-hit-count-db.txt` for `rule-hit-count.bin`,
+  `show_log_globalprotect.txt` for `sslvpn-access/sslvpn-task.log*`. The
+  exception is `wtmp`/`btmp`/`lastlog`, which has none: for "who logged in,
+  when, from where" use `show_log_system.txt` (`grep -i "logged in\|auth"`)
+  and `authd.log`. The original is gone from the archive, not hidden.
+- **Over-anonymization on old copies.** Archives made by earlier versions
+  replaced common English words inside command echoes and fixed output
+  (`> show chassis inventory` → `> show chassis user72321`, `Connection
+  status: up` → `user51283`) and pseudonymized interface names inside zone
+  `<member>` elements. Both are fixed, but a copy you are handed may predate
+  the fix — **prefer structural greps (section markers, counter names, `X/Y`
+  fractions) over long fixed English strings**, and treat an empty
+  fixed-string grep on an old copy as possibly mangled, not absent.
+- **The `*.mapping.json` sidecar reverses everything** and must never travel
+  with the anonymized archive.
 
 ## Before you finish — feed this file
 
@@ -639,7 +689,7 @@ Two rules on how to write it:
 - **Keep `TSF-GUIDE.md` (next to this file) in step.** It is the human-facing
   version of the same knowledge — the file map and per-problem log tables live
   there, the method lives here; when one gains a section the other needs a
-  look. `docs/TSF-GUIDE.md` is a pointer page to it, not a copy.
+  look.
 
 Say in one line what you added, so the person reading your analysis knows the
 skill moved.

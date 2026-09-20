@@ -54,7 +54,7 @@ Two dates matter and they are not the same:
     .ha-remote-rc.xml                      ← the HA peer's running config
 ./opt/pancfg/mgmt/devices/localhost.localdomain/
     platform.xml                           ← capacity limits PAN-OS enforces
-    candidatecfg.<n>.xml, last-candidatecfg.xml
+    candidatecfg.<n>.xml, refreshed-candidatecfg.<n>.xml, last-candidatecfg.xml
     rule-hit-count-db.txt, rule-hit-count.bin
     global-external-list.xml               ← EDL contents
     vsys<n>_<EDL name>.ebl                 ← per-EDL binary cache (IP lists; spaces in the name become #)
@@ -72,14 +72,26 @@ Two dates matter and they are not the same:
                                               chassis: opt/var/s<slot>/dp<n>/cores/crashinfo/ per dataplane
 ./var/log/pan/sslvpn-access/               ← GlobalProtect access log (text) + sslvpn-task.log* (binary) — only when GP is configured
 ./var/log/pan/frr/                         ← frr_export.log; with advanced routing on, ns<N>_frr_export.log per logical router
-./var/log/{messages,audit/,nginx/,ntpstats/,sa/}  ← Linux side: kernel, auth, web, NTP, sar
+./var/log/{messages,dmesg,syslog-system,audit/,sa/}  ← Linux side: kernel ring buffer, auth, sar
+./var/log/nginx/                           ← web front ends: access, error, api_metrics, restapi_metrics,
+                                              l3svc_access, and sslvpn_access.log — the GP portal's nginx,
+                                              rotated to .N.zip (not .gz); nginx_*.pid / .status beside them
+./var/log/ntpstats/{loopstats,peerstats}   ← clock offset and drift per NTP update (dates are Modified Julian Days)
+./opt/pancfg/mgmt/{template,sp}/           ← Panorama-managed only: the pushed template and shared policy,
+                                              with push-version.txt, push-checksum.txt and their own *-audit.xml,v
 ./opt/panrepo/logs/                        ← boot history: bios.log, reboot.log, swm.log, history.log
 ./etc/frr/                                 ← routing daemon config (advanced routing engine)
 ./opt/plugins/var/log/pan/                 ← plugin logs (adem, dlp, …)
+./opt/pancfg/hsm/, ./opt/nfast/, ./etc/Chrystoki.conf  ← HSM scaffolding: shipped on most boxes even with no HSM
+                                              (only *-original* files = never configured)
 ```
 
 Rotation conventions in `var/log/pan/`: `<daemon>.log` is live, `<daemon>.log.old`
-or `.1`, `.2`… are older, `.gz` are compressed rotations. **The failure window
+or `.1`, `.2`… are older, `.gz` are compressed rotations (`.log.0.gz` exists
+too — `0` is a rotation, not the live file). **`var/log/nginx/` rotates to
+`.zip`** instead: `sslvpn_access.log.1.zip`… Single-member deflate, so
+`zcat -f`/`zgrep` read them; `unzip -l` shows the member's original name and
+the date its window ends. **The failure window
 is often only in a rotation** — a daemon that logs 10 MB an hour has rotated
 the interesting hour away by the time the TSF is generated. Always list the
 rotations before concluding "nothing in the log".
@@ -170,6 +182,17 @@ writes `ikemgr-ng.log` while `ikemgr.log` stays present and idle; same for
 | content / AV updates | `paninstaller_content.log`, `curlog_out_*`, `contentd.log`, `md_*.log` | `> request content upgrade info`, `opt/pancfg/mgmt/global/*info.xml` |
 | WildFire | `wildfire-monitor.log`, `wildfire-upload.log`, `wf_curl.log` | `> show wildfire status` |
 | logging / log forwarding | `logrcvr.log`, `varrcvr.log`, `logging-services.log`, `logpurger.log` — on a PA-7000, under the log processing cards `opt/var/s<slot>/lfp<n>/log/pan/` (`logrcvr.log`, `syslog-ng.log`, `lfp-monitor.log`) | `> show logging-status`, `debug log-receiver statistics`; `redis_useridd.log`/`redis_mgmt.log` can be the biggest files of the TSF (200 MB seen) |
+| forwarding to the cloud (Strata Logging Service / Cortex Data Lake) | `icd.log` — the ingestion client, JSON lines; its certificate-chain checks name the region the device ships to (`CN=ingest.<region>.prd.strata.logging.paloaltonetworks.com`) | `icd_dp.log` — the data path, **warnings and errors only**: `dpi nonack stream[0:N] failed to send ingestion request, EOF`, `rpc error: code = Unavailable … reset reason: overflow`. Tens of thousands of those = logs are not reaching the cloud, and nothing else in the TSF says so. `lcaas_agent.log`, `envoy_broker.log`, `l3svc_ngx_error.log` for the transport underneath |
+| SNMP polling | `snmpd.log` | `Unable to fetch <sysd key>` / `No counter node` = the daemon could not read the value the NMS asked for — an OID that stopped answering without the box being down |
+| device health monitors | `sysdagent.log` | one timed cycle per check, each with a `result:` — `MONITOR: Disk space check`, `MONITOR: Certificate expiry check completed. Expired certificates found: N`, `MONITOR: Backup status check`. The dated history behind a health alarm |
+| certificates / keystore | `sslmgr.log`, `cryptod.log` (`Id:<name> not found in keystore`, master-key changes), `device_certgen.log`, `dsms-certificates.log` | `> show device-certificate status`; `sysdagent.log` for the expiry count over time |
+| MP ↔ DP plumbing | `mprelay.log`, `pan_comm_0.log` (the message bus; an error count in the thousands is the signal, not one line), `pan_dha.log` (dataplane HA agent) | `cp-monitor.log` `cp_stats` on platforms that have a CP (SKILL.md, step 2b) |
+| daemon supervision / startup | `sysd.log`, `supervisor.log` (`*** Supervisor process is initializing system ***` = a full MP restart), `md-startscript.log`, `mgmt_fb.log` | `mp-monitor.log` PID changes; `opt/panrepo/logs/reboot.log`. There is **no** `masterd.log` on 10.2–12.1 |
+| time sync | `var/log/ntpstats/loopstats` (offset, drift), `peerstats` (per peer) | dates are Modified Julian Days: `date -d "1858-11-17 + <MJD> days"`. Sub-ms offset = timestamps across the archive are comparable; a step of seconds re-bases every correlation |
+| SD-WAN / LSVPN / tunnels | `sdwand.log`, `satd.log` (satellite), `tund.log` | `> show sdwan …`, the `network/sdwan` subtree of the config |
+| IoT Security / device identification | `iotd.log`, `redis_iotd.log`, `icd.log` (same ingestion path) | `> show iot …` where the plugin is installed |
+| Cloud Identity Engine / directory sync | `dscd.log` (JSON), `redis_dscd.log` | `useridd.log` for what the mappings became |
+| plugins | `plugin_api_server.log` (the plugin bus — client connect/disconnect churn), `plugin_install.log`, `check_plugin_compat.log` | `opt/plugins/var/log/pan/` for each plugin's own log |
 | reports | `reportd.log`, `report_gen.log`, `genreport.log`, `indexgen.log` | |
 | SSL decryption / certificates | `sslmgr.log`, `device_certgen.log`, `uia_tsa_cert.log` | `> show device-certificate status`, `debug sslmgr statistics` |
 | DHCP / DNS proxy | `pan_dhcpd.log`, `dhclient_debug.log`, `dnsproxy_go.log` | |
@@ -177,6 +200,25 @@ writes `ikemgr-ng.log` while `ikemgr.log` stays present and idle; same for
 | web UI / API | `mgmt_httpd_access.log`, `mgmt_httpd_error.log`, `appweb3-panmodule.log`, `php.debug.log` | `dagger.log`: every operational command dispatched (`OPCMD: handler "session"` / `finish handler …`, timestamped) — what was run from CLI/API, and when |
 | disk | `logdb_dirs_gen.log`, `panlogs-partition.log`, `messages` | `> show system disk-space` |
 | telemetry / cloud services | `device_telemetry*.log`, `lcaas_agent.log`, `envoy_broker.log` | |
+
+### Names that are not in any TSF
+
+Published PAN-OS log lists and cheat sheets circulate names that no archive
+in this corpus (PA-440 → PA-7080, PAN-OS 10.2.9 → 12.1.4) contains. Before
+reporting that a log is missing, `ls var/log/pan/ | grep -i <daemon>`.
+
+| name you may read elsewhere | what is actually there |
+|---|---|
+| `masterd.log`, `masterd_detail.log` | `sysd.log`, `supervisor.log`, `md-startscript.log` |
+| `logcvr.log`, `varcvr.log` | `logrcvr.log`, `varrcvr.log` (the shortened spellings are typos) |
+| `ha-agent.log` | `ha_agent.log` |
+| `userid.log` | `useridd.log` |
+| `pan_bc_download.log` | no equivalent; content downloads are in `curlog_out_*` and `paninstaller_content.log` |
+| `pan_packet_diag.log` | real, but on a single archive of the corpus — treat as platform- or version-specific |
+
+The converse also holds: `pan_comm_0.log`, `pan_dha.log`, `sysdagent.log`,
+`cryptod.log`, `snmpd.log`, `icd.log` and `pppoed.log` are on **every**
+archive of the corpus and appear in no vendor cheat sheet.
 
 `show_log_system.txt` (the system log) is the cross-daemon timeline: when
 you do not know where to look, grep it for the failure minute and it names
@@ -187,7 +229,11 @@ content database), `regip/reg_ips.xml`, `*.dat` (regex group binaries),
 `ui_content/*.js.gz`, `fs_manifest.txt` (a file listing of the whole box),
 `req_stats.log` (management-server request accounting),
 `last-candidatecfg-audit.xml,v` (RCS history of every *candidate*, tens of
-MB), `tmp/cli/logs/sysd_objects_meta.xml` (the whole sysd object tree as
+MB), the working copies under `opt/pancfg/mgmt/tmp/` (`cndt_cfg.xml`,
+`tplsp_cfg_to_validate.xml`, `tplsp_cfg_subintf_add.xml`,
+`candidate_cfg_*.xml` — 25 MB each, the commit machinery's scratch space),
+`wif_event/` (WildFire inline-ML event records),
+`tmp/cli/logs/sysd_objects_meta.xml` (the whole sysd object tree as
 XML — 100 MB on a chassis; `sdb.txt` is the same data as grep-able dotted
 keys), `opt/var*/…/log/pan/memdump/hwbuf-*.raw` (100 MB binary hardware
 buffer dumps per DP). Two that look like noise but are not: `content_telemetry.log` opens
@@ -216,6 +262,15 @@ and the raw push in `opt/pancfg/mgmt/tmp/panorama_pushed/` (`newsp.xml`,
 `lastsp.xml`, `mergesp.xml`, `pushsp.xml`, the `*-push-request.xml`
 requests; 12.x adds `before-` and `after-sp-imported.xml`).
 `running-config.xml` alone is then incomplete.
+
+On a Panorama-managed device, `opt/pancfg/mgmt/template/` and
+`opt/pancfg/mgmt/sp/` hold the pushed template and shared policy as the
+device received them, each with `push-version.txt` (a plain integer — the
+push the device holds), `p-push-version.txt` (the one before it),
+`push-checksum.txt` (md5 of the pushed blob) and its own
+`template-config-audit.xml,v` / `sp-config-audit.xml,v` RCS history. Those
+version integers answer "is this device running the push Panorama thinks it
+sent" without diffing megabytes of XML.
 
 `cfg-audit.xml,v` is an RCS file: each revision is one commit, with author
 and timestamp. `rlog`/`co -p` read it, or search `date` headers by hand. It

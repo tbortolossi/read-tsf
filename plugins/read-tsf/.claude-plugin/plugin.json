@@ -1,6 +1,6 @@
 {
   "name": "read-tsf",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Analyze a PAN-OS tech support file (TSF) with shell tools — file map, log aliases and the L3 reading doctrine, re-verified against ten real TSFs on PAN-OS 10.2 through 12.1.",
   "author": {
     "name": "Thomas Bortolossi",
