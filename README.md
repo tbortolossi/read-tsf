@@ -41,10 +41,13 @@ Updates take effect after a restart.
 ## What it covers
 
 - **Extraction and orientation** — where the command dump lives, how to read
-  the device's own clock, what the archive's generation time does and does not
-  tell you.
+  the device's own clock, whether that clock held still, what the archive's
+  generation time does and does not tell you.
+- **An inventory pass** — where the bytes are, which planes exist, and the
+  time window each log's rotations actually cover, so that a file nobody
+  opens is a file somebody decided not to open.
 - **A symptom → file → grep map** — VPN, HA, GlobalProtect, routing, sessions,
-  dataplane, management plane, crashes.
+  dataplane, management plane, crashes, log forwarding.
 - **Log-file aliases** — the name a log has on disk is rarely the name a PAN-OS
   engineer uses for it.
 - **Reading heuristics** — counter methods, how to tell a sampled series from a
@@ -52,10 +55,16 @@ Updates take effect after a restart.
   "monitor-only".
 - **Platform differences** — multi-dataplane and chassis layouts, PA-7000 log
   processing cards, what changed across 10.2 → 12.1.
+- **Names that are not in any TSF** — published PAN-OS log lists circulate
+  with files that exist on no archive at all. The list of them, and what is
+  there instead, so a missing log is never reported from a name nobody
+  checked.
 - **Anonymized archives** — what
   [tsf-anonymizer](https://github.com/tbortolossi/tsf-anonymizer) preserves,
   what it redacts, and the over-anonymization artifacts left by its older
   versions.
+
+Released versions and what changed in each: [CHANGELOG.md](CHANGELOG.md).
 
 ## Layout
 

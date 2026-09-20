@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the plugin
 version follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.1.1] — 2026-09-20
+
+### Fixed
+
+- Two table cells were split by unescaped pipes inside inline code:
+  `grep -E "panic|oops|segfault|watchdog|Killed process"` in the crash row
+  and `before|after-sp-imported.xml` in the Panorama row. Markdown read
+  those pipes as column separators, so the crash row rendered as nine
+  columns and scattered its interpretation across cells belonging to no
+  header. Both now escape them, as the memory and auth rows already did.
+- `README.md` documented `claude plugin update read-tsf`, which the CLI
+  answers with `Plugin "read-tsf" not found`. The qualified name
+  `read-tsf@tbortolossi` is what it accepts.
+
+### Changed
+
+- `README.md` lists what the 1.1.0 additions cover — the inventory pass,
+  clock trust, log forwarding, and the log names that exist on no archive —
+  and points at this changelog.
+
 ## [1.1.0] — 2026-09-20
 
 First public release. Everything below was verified against real archives:
