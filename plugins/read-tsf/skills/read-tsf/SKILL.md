@@ -583,7 +583,8 @@ points: `TSF-GUIDE.md` §5. Two specifics:
 
 ## Anonymized TSFs
 
-A TSF produced by this repo's anonymizer keeps layout, line counts,
+A TSF produced by [tsf-anonymizer](https://github.com/tbortolossi/tsf-anonymizer)
+keeps layout, line counts,
 timestamps, counters, interface names and built-ins; identifiers are replaced
 consistently (same original → same pseudonym everywhere): `100.64.x.y` was a
 private IP, `192.0.2.x`/`198.51.100.x`/`203.0.113.x` public, `hostNNN[.anon.internal]`
@@ -603,7 +604,7 @@ where" use `show_log_system.txt` (`grep -i "logged in\|auth"`) and
 `*.mapping.json` sidecar reverses it all and must never travel with the
 anonymized archive.
 
-Over-anonymization seen on archives made by **older versions** of this tool:
+Over-anonymization seen on archives made by **older versions** of tsf-anonymizer:
 common English words replaced inside command echoes and fixed output
 (`> show chassis inventory` → `> show chassis user72321`, `Connection
 status: up` → `user51283`, the `install` verb in
@@ -628,7 +629,7 @@ the same turn, without being asked:
 | the answer to a symptom took more than one grep | add the working `symptom → file → grep` line to Step 3 |
 | a pointer here was wrong: empty grep, renamed command, output that moved | fix it or delete it — a wrong pointer costs more than a missing one |
 | a phrasing in a log differs from what Step 2b describes | correct the example line |
-| the anonymizer mangled or missed something in this TSF | that belongs in the repo's `.claude/rules/anonymizer-invariants.md` (invariant or known limitation) **and** a test, not here |
+| the anonymizer mangled or missed something in this TSF | that belongs in [tsf-anonymizer](https://github.com/tbortolossi/tsf-anonymizer), in its `.claude/rules/anonymizer-invariants.md` (invariant or known limitation) **and** a test, not here |
 
 Two rules on how to write it:
 
