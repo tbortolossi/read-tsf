@@ -1,0 +1,28 @@
+# Never commit support bundles or anything extracted from one.
+*.tgz
+*.tar.gz
+*.tar
+*.zip
+*.pcap
+*.pcapng
+*.core
+*.info
+*.mapping.json
+techsupport*/
+tsf/
+TSF/
+extracted-tsf/
+
+# Config and log shapes that only ever come out of a real device.
+*.log
+*.log.*
+running-config.xml
+*-config.xml
+*.xml,v
+
+# Local noise.
+.DS_Store
+*.swp
+*~
+.venv/
+__pycache__/

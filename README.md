@@ -26,8 +26,8 @@ repository's own settings, so anyone who clones that repository gets it too.
 
 Restart Claude Code, then point it at an archive:
 
-> Analyse ce techsupport : `~/cases/01234567/techsupport.tgz` — le tunnel IPsec
-> vers le site B tombe toutes les nuits.
+> Analyze this tech support file: `~/cases/01234567/techsupport.tgz` — the
+> IPsec tunnel to site B drops every night.
 
 ## Update
 
@@ -66,7 +66,37 @@ plugins/read-tsf/
   skills/read-tsf/
     SKILL.md                        the working method
     TSF-GUIDE.md                    the file-by-file map
+tools/
+  coverage.sh                       which files of a TSF the map accounts for
+  validate.sh                       manifests, skill frontmatter, internal links
+  check-no-customer-data.sh         refuses anything that came out of a real device
 ```
+
+## Keeping the map honest
+
+The skill is only worth what its pointers are worth, so every claim in it
+comes from an archive somebody actually opened. `tools/coverage.sh` is how
+that is checked: point it at an extracted TSF and it lists every file family
+the two documents do not mention, largest first.
+
+```bash
+tools/coverage.sh ~/cases/01234567/extracted-tsf
+```
+
+Reaching 100 % is not the goal — most of a TSF is the vendor content
+database, per-daemon noise and config scratch space that nobody should read.
+The goal is that a file holding real bytes is either documented or a
+deliberate omission, never an oversight. A family that shows up there and
+matters is a contribution: add it with the platform or version that carries
+it, and say how you verified it.
+
+## Contributing
+
+A contribution is a pointer you verified against a real archive, with the
+platform or version it holds on. [CONTRIBUTING.md](CONTRIBUTING.md) is the
+short version, [CLAUDE.md](CLAUDE.md) the working rules — starting with the
+one that cannot be relaxed: nothing out of a real tech support file ever
+enters this repository, not even anonymized.
 
 ## Related
 

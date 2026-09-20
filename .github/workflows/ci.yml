@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # The manifests do not rot, but a leak can be noticed late. Look weekly.
+    - cron: '17 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No customer data
+        run: tools/check-no-customer-data.sh
+
+      - name: Shell scripts
+        run: shellcheck tools/*.sh
+
+      - name: Manifests, skill and links
+        run: tools/validate.sh
+
+      - name: Coverage tool runs
+        # There is no TSF to point it at in CI — it must at least refuse
+        # cleanly rather than break on a syntax error.
+        run: |
+          ! tools/coverage.sh 2>/dev/null
+          tools/coverage.sh /nonexistent 2>&1 | grep -q "not a directory"
