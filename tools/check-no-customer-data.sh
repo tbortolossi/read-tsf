@@ -29,25 +29,40 @@ done
 while IFS= read -r hit; do
   report "non-documentation IPv4 address: $hit"
 done < <(
-  grep -InE '(^|[^0-9.])([0-9]{1,3}\.){3}[0-9]{1,3}([^0-9.]|$)' "${files[@]}" 2>/dev/null |
+  grep -HInE '(^|[^0-9.])([0-9]{1,3}\.){3}[0-9]{1,3}([^0-9.]|$)' "${files[@]}" 2>/dev/null |
   grep -vE '(^|[^0-9.])(192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|127\.0\.0\.1|0\.0\.0\.0|255\.255\.255\.)' |
   grep -vE '(^|[^0-9.])100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.'
 )
 
-# 3. Any e-mail address other than the maintainer's.
+# 3. Device identity that is not an address: PAN-OS serials (twelve digits,
+#    leading zero), MAC addresses outside the RFC 7042 documentation block,
+#    and values inside the config elements that carry names and secrets.
+while IFS= read -r hit; do
+  report "possible serial number: $hit"
+done < <(grep -HInE '(^|[^0-9])0[0-9]{11}([^0-9]|$)' "${files[@]}" 2>/dev/null)
+while IFS= read -r hit; do
+  report "MAC address: $hit"
+done < <(grep -HInE '(^|[^0-9a-fA-F:])([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}([^0-9a-fA-F:]|$)' "${files[@]}" 2>/dev/null |
+         grep -viE '00:00:5e:00:53:|00:00:00:00:00:00|ff:ff:ff:ff:ff:ff')
+while IFS= read -r hit; do
+  report "config value: $hit"
+done < <(grep -HInE '<(hostname|serial|domain|phash|password|private-key|secret|pre-shared-key|key)>[^<[:space:]][^<]*</' "${files[@]}" 2>/dev/null)
+
+# 4. Any e-mail address other than the maintainer's.
 while IFS= read -r hit; do
   report "unexpected e-mail address: $hit"
-done < <(grep -InP '(?<![\w.@-])[\w.%+-]+@(?:[a-zA-Z0-9-]*[a-zA-Z][a-zA-Z0-9-]*\.)+[a-zA-Z]{2,}\b' "${files[@]}" 2>/dev/null |
+done < <(grep -HInP '(?<![\w.@-])[\w.%+-]+@(?:[a-zA-Z0-9-]*[a-zA-Z][a-zA-Z0-9-]*\.)+[a-zA-Z]{2,}\b' "${files[@]}" 2>/dev/null |
          grep -vE 'thomasbortolossi@gmail\.com|noreply@|@example\.(com|org)|\.anon\.internal')
 
-# 4. Credential material. This file carries the patterns, so it is excluded.
+# 5. Credential material, including PAN-OS encrypted values (-AQ==…) and
+#    crypt hashes. The files that carry these patterns are excluded.
 scan=()
 for f in "${files[@]}"; do
-  [ "$f" = "tools/check-no-customer-data.sh" ] || scan+=("$f")
+  case $f in tools/check-no-customer-data.sh|plugins/read-tsf/bin/read-tsf-sync*) ;; *) scan+=("$f") ;; esac
 done
 while IFS= read -r hit; do
   report "possible credential: $hit"
-done < <([ ${#scan[@]} -eq 0 ] || grep -InE 'BEGIN [A-Z ]*PRIVATE KEY|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN CERTIFICATE-----' "${scan[@]}" 2>/dev/null)
+done < <([ ${#scan[@]} -eq 0 ] || grep -HInE 'BEGIN [A-Z ]*PRIVATE KEY|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN CERTIFICATE-----|-AQ==[A-Za-z0-9+/=]{8,}|\$[156]\$[A-Za-z0-9./]{8,}' "${scan[@]}" 2>/dev/null)
 
 if [ $fail -ne 0 ]; then
   echo
