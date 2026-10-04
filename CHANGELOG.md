@@ -6,6 +6,8 @@ version follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-10-04
+
 ### Added
 
 - `read-tsf-sync` installs and updates the skill on machines with or
