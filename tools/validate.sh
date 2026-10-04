@@ -6,7 +6,7 @@ set -uo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 2
 
 python3 - <<'PY'
-import json, os, re, sys
+import json, os, re, subprocess, sys
 
 fail = []
 def check(cond, msg):
@@ -61,17 +61,19 @@ for entry in market.get("plugins", []):
                   f"{md}: description missing or too short to trigger reliably")
 
 # --- relative links --------------------------------------------------------
-for dirpath, dirs, files in os.walk("."):
-    dirs[:] = [d for d in dirs if d not in (".git", ".github")]
-    for f in files:
-        if not f.endswith(".md"):
+# Files git would commit (tracked or new, not ignored): a private note under
+# an ignored directory is not part of the repository.
+listed = subprocess.run(["git", "ls-files", "-co", "--exclude-standard", "--", "*.md"],
+                        capture_output=True, text=True, check=True).stdout.split("\n")
+for p in filter(None, listed):
+    if p.startswith(".github/") or not os.path.isfile(p):
+        continue
+    dirpath = os.path.dirname(p) or "."
+    for target in re.findall(r"\]\(([^)]+)\)", open(p, encoding="utf-8").read()):
+        if target.startswith(("http://", "https://", "#", "mailto:")):
             continue
-        p = os.path.join(dirpath, f)
-        for target in re.findall(r"\]\(([^)]+)\)", open(p, encoding="utf-8").read()):
-            if target.startswith(("http://", "https://", "#", "mailto:")):
-                continue
-            resolved = os.path.normpath(os.path.join(dirpath, target.split("#")[0]))
-            check(os.path.exists(resolved), f"{p}: broken link -> {target}")
+        resolved = os.path.normpath(os.path.join(dirpath, target.split("#")[0]))
+        check(os.path.exists(resolved), f"{p}: broken link -> {target}")
 
 if fail:
     print("\n".join(sorted(set(fail))))
