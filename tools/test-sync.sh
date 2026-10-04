@@ -18,7 +18,7 @@ case $impl in bash|ps) ;; *) sed -n '2,6p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1
 
 windows=0; case $(uname -s) in MINGW*|MSYS*|CYGWIN*) windows=1 ;; esac
 w() { if [ $windows = 1 ]; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
-pwsh=${PWSH:-$([ $windows = 1 ] && echo powershell.exe || echo pwsh)}
+if [ $windows = 1 ]; then pwsh=${PWSH:-powershell.exe}; else pwsh=${PWSH:-pwsh}; fi
 
 T=$(mktemp -d)
 if [ -n "${KEEP:-}" ]; then echo "sandbox: $T"; else trap 'rm -rf "$T"' EXIT; fi
@@ -47,7 +47,14 @@ else
 fi
 G=rts/repo/plugins/read-tsf/skills/read-tsf
 fails=0
-check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fails=$((fails + 1)); fi; }
+check() {   # on failure, show the output the check was reading
+  if eval "$2"; then echo "ok   $1"; return; fi
+  echo "FAIL $1"; fails=$((fails + 1))
+  local last
+  # shellcheck disable=SC2012  # the o.* names are this script's own
+  last=$(ls -t o.* 2>/dev/null | head -1)
+  [ -z "$last" ] || sed 's/^/     | /' "$last" | tail -25
+}
 nowhere=https://nowhere.invalid/read-tsf.git
 
 cp src/dist/read-tsf-1.2.0.tar.gz src/dist/read-tsf-1.2.0.tar.gz.sha256 .
@@ -127,5 +134,4 @@ check "the release stamp is not an edit" "! grep -q 'read-tsf-release' o.status2
 READ_TSF_REPO_URL=$nowhere run update > o.unreach 2>&1
 check "a clone does not silently go offline" "grep -q 'GitHub is not reachable' o.unreach"
 
-[ $fails -eq 0 ] && echo "all checks passed ($impl)" || echo "$fails check(s) failed ($impl)"
-[ $fails -eq 0 ]
+if [ $fails -eq 0 ]; then echo "all checks passed ($impl)"; else echo "$fails check(s) failed ($impl)"; exit 1; fi

@@ -50,7 +50,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: read-tsf-sync, Windows PowerShell 5.1
-        run: PWSH=powershell.exe tools/test-sync.sh ps
+        run: PWSH=powershell.exe READ_TSF_DEBUG=1 tools/test-sync.sh ps
 
       - name: read-tsf-sync, Git Bash
+        if: success() || failure()
         run: tools/test-sync.sh bash
