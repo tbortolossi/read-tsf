@@ -304,8 +304,9 @@ have several planes:
   for files before rerouting the analysis), and a PA-5250 on 11.2 can run
   only dp0/dp1 — `target-dp s1dp2` answers `Server error : target-dp
   invalid` while `opt/var.dp2` exists with an empty `log/pan/`; trust the
-  error, not the directory. On the PA-1400, `dpc_nica_stats` prints `NICA
-  FPGA not available`, `bcm_g_cntr_stats` is broken and mp-monitor
+  error, not the directory. On the PA-1400 and the PA-3250 (11.1), `dpc_nica_stats` prints `NICA
+  FPGA not available`, `bcm_g_cntr_stats` is broken (Python
+  `SyntaxError`) and mp-monitor
   `fvif_stats` is empty — per-interface history on that family exists only
   in `> show counter interface all` at snapshot time. On the PA-3200,
   `pan_task_*.log` at debug level rotates in ~1–2 minutes (70k lines/min
@@ -337,7 +338,7 @@ first:
 | **Auth** | `authd.log`, `useridd.log` | `show_log_system.txt`, `sslmgr.log` (certs), `sysdagent.log` (`MONITOR: Certificate expiry check completed. Expired certificates found: N` — a dated count, the cheapest proof that a cert-related failure had already started), `cryptod.log` (master-key and keystore: `Id:<name> not found in keystore` breaks whatever consumes that secret) | LDAP `rc=49`=bad bind credentials; RADIUS timeouts; SAML clock skew. **An exposed GP portal is brute-forced**: `grep -c "failed authentication for user" tmp/cli/logs/show_log_system.txt` then `grep -o "for user '[^']*'" … \| sort \| uniq -c \| sort -rn \| head` — guessed names (`error`, `request`, `port`, `cli`, `usr`, `test`, `admin`) and one source IP per burst are a scanner, not a customer problem; the `From:` IP of the same lines in `authd.log` says where it comes from. Real users fail with their real names, a few times, from a few IPs. |
 | **User-ID** | `useridd.log`, `distributord.log` | `> show user ip-user-mapping-mp all` (the MP's table), `> show user user-id-agent statistics` | Identification ≠ authentication: nobody fails a login, policy just mis-applies / user shows `unknown`. A login failing = auth domain instead. |
 | **Crash / reboot** | `var/cores/crashinfo/` (per DP on a chassis, step 1), `opt/panrepo/logs/reboot.log`, `sysd.log` | `messages`, `var/log/dmesg` (the kernel ring buffer as it stood at generation — the boot's hardware inventory, and any post-boot kernel error), `var/log/syslog-system`, `mce.log` (not on every model), `opt/panrepo/logs/{bios,history,swm,bts,infra-debug}.log`, the console logs (step 2b) | `grep -E "panic\|oops\|segfault\|watchdog\|Killed process"`. PID change in `mp-monitor.log` = daemon restart without reboot. **After any upgrade, check for crashes even if the symptom isn't crash-shaped.** |
-| **CPU** | `dp-monitor.log`, `mp-monitor.log`, `> show running resource-monitor` | `var/log/sa/sar*` (31-day history) | DP CPU = traffic-side (sessions, decryption, App-ID); MP CPU = reports/logging/configd. DP > 80 % sustained 3+ snapshots = critical. Correlate spikes with commits/content updates. |
+| **CPU** | `dp-monitor.log`, `mp-monitor.log`, `> show running resource-monitor` | `var/log/sa/sar*` (31-day history) | DP CPU = traffic-side (sessions, decryption, App-ID); MP CPU = reports/logging/configd. DP > 80 % sustained 3+ snapshots = critical. Correlate spikes with commits/content updates — **and with HA state changes**: see "DP CPU — onset and attribution" below. |
 | **Memory** | `mp-monitor.log` (`memory`, `memory_detail`, `top_summary`/`pidstat` per PID) | `grep -E "Out of memory\|oom-killer" var/log/messages*` — `> show system resources` is **not** in the command dump on any of ten TSFs (10.2 → 12.1); it is a live-device command, the monitor log is its history | Growth across 3+ snapshots is the signal, never one reading. Linux cache ≠ pressure. LEAK (one RSS rising) vs LOAD (tracks sessions/tunnels) vs steady-high (benign). A leaking daemon is a future-crashing daemon. |
 | **Drops / perf / buffers** | `> show counter global filter delta yes`, `> show running resource-monitor` | `dp-monitor.log`, `> show session info`, `> debug dataplane pool statistics`, `> show zone-protection` | See the buffers/PBP/counters section below. Read `drop`/`error` severities first; the **delta** section says what happens now. `flow_policy_deny`+`tcp_rst_from_self`=policy RST · `flow_fwd_mtu_exceeded`+`ip_df_drop`=MTU in tunnel path (big packets fail, ping works) · `flow_tcp_non_syn` right after failover is EXPECTED. Depleted DP pools drop silently. |
 | **Interfaces** | `> show interface all`, `pan_ifmgr.log`, `qtrace_routed.log` | `brdagent.log` (port/ASIC), `l2ctrld.log`, `> show system environmentals` (temperature, fans, PSU — a port that flaps with a failed fan or PSU is a hardware case) | Physical first — it invalidates every higher-layer diagnosis on the path. CRC/FCS on one port=cable/SFP · late collisions=duplex mismatch · `dot1q_tag_err`=VLAN arriving on a port not carrying it. `qtrace_routed.log` is where an interface flap is *dated to the millisecond* and counted: `grep -c "ifmon_process_hwifstate" ` then `grep "pan_routed_ifstate_down" ` for the per-transition list (16 k transitions on one interface over three weeks is the whole finding), and `pan_routed_set_ospf_seq_number` in the same file counts the OSPF re-originations that flap caused. Interfaces are numbered, not named (`Interface:17`) — map them with `> show interface all`. |
@@ -424,7 +425,11 @@ when the day/week buckets were reset by a reboot:
   timestamped free-count series every ~10 min), and each `--- panio` section
   embeds a **full resource-monitor dump** including per-second
   `packet buffer` / `packet descriptor (on-chip)` rows — the pre-reboot
-  history. That series samples every ~10 min, so it *undercounts*: on a
+  history. The same `panio` block also embeds `show session info` and the
+  **global counters with their per-second rate** (`:<counter> <value>
+  <rate>` lines, e.g. `:pkt_recv 123… 122000`) — parse them across
+  snapshots for a pre-incident time series of any counter (`pkt_recv`,
+  `pkt_sent`, `ha_msg_sent`, `flow_fpga_*`, drops). That series samples every ~10 min, so it *undercounts*: on a
   PA-5430 with 19 congested minutes in the day it caught 3. Use it to prove
   an event lasted (a 10-min sampler landing on 98 % means seconds-to-minutes,
   not a microburst) and `show_log_system.txt` to count them.
@@ -582,6 +587,124 @@ exhaustion; `tcp_fptcp_rxmt`/`tcp_fptcp_fast_retransmit` (proxied-TCP
 retransmit pressure — descriptor exhaustion with decryption); and
 `tcp_exceed_flow_seg_limit`/`tcp_drop_packet`/`tcp_out_of_sync` (out-of-order
 queues held by one-way/TAP feeds).
+
+## DP CPU — onset and attribution
+
+A "dataplane at 100 %" case needs three answers: when did it start, is the
+box sized for the load, and which part of the DP eats the time.
+
+- **Per-process % in dp-monitor `processes`/`top` is not DP load.** On the
+  PA-3200 (Cavium) `all_pktproc_*`, `flow_ctrl`, `flow_mgmt` and
+  `pktlog_forwarding` show 94–100 % in every snapshot — busy-polling —
+  including on a node that stayed **passive** for days, while
+  `> show running resource-monitor` on that node reads 1–3 %. "pktproc
+  pinned at 100 % while passive = deadlock" is a misreading. Prove it with
+  the passive peer's dp-monitor, and quote resource-monitor (or the
+  resource-monitor dump embedded in each `--- panio` block) as the load.
+  The raw `processes` lines carry no timestamp; date them from the
+  enclosing `<ts>  --- processes` header.
+- **In HA, an error on the suspect node is a cause only if the peer lacks
+  it.** Count the same pattern per day on both TSFs. If the counts match,
+  it is background noise. When the active node "loses traffic" with links
+  up, use the HA2 cross-check (TSF-GUIDE, per-problem table): the active's
+  `ha_msg_sent` rate against the passive's `pkt_recv`. Then localize the
+  loss with the CPU-vs-MAC counters of `show counter interface all` on
+  both ends of HA2 (TSF-GUIDE, "where frames are lost").
+
+- **Date the onset against the HA history before blaming traffic.**
+  `grep "Moved from state" tmp/cli/logs/show_log_system.txt` — a CPU that
+  jumps from ~2 % (week buckets of resource-monitor) to 60–80 % on the day
+  this node went **Passive → Active** is the load *arriving*, not changing.
+  `> show high-availability all` confirms it: `Last suspended state reason:
+  User requested` on the peer = a human suspended it; the `session setup`
+  sent/received counters of HA sync say which member carried the traffic
+  most of the time (received ≫ sent = this node was passive). Then
+  since-boot counters and `> show running application statistics` cover
+  mostly the **active period only** — check that bytes ÷ days-active
+  matches `show session info` throughput before quoting them as a rate.
+  Ask for the peer's TSF: same load on the peer at a lower CPU = sizing
+  difference between members.
+- **VM-Series sizing — the licence caps the cores, not the VM.** Compare
+  `vm-license` / `vm-cpu-count` in `show system info` with the CPU count
+  and model the hypervisor gives (`dmesg`, platform info): a `VM-SERIES-4`
+  (Flex 4 vCPU) on a 16-vCPU instance uses 4 cores, of which **two** are
+  DP — the extra vCPU are paid and idle. Only the DP cores in use print a
+  column in `> show running resource-monitor`. Also read the packet-IO
+  mode (`grep -i -E "packet mmap|dpdk" tmp/cli/techsupport_*.txt`):
+  `Packet MMAP` with `DPDK capable: no` means DPDK (the default) was
+  dropped. PAN's SR-IOV/DPDK compatibility matrix says: "If the VM-Series
+  firewall detects an unsupported driver, the firewall reverts to
+  PacketMMap mode". Report the counters as facts
+  (`flow_ip_cksm_sw_validation` / `flow_tcp_cksm_sw_validation` ≈
+  `pkt_recv`, a steady `pkt_recv_skip_inflight`), but don't claim MMAP
+  causes the software checksum unless you have a DPDK baseline.
+  **Find out why, per boot:**
+  - `var/log/pan/pan_vm_plugin.log` lists `Intf ethN - Hwaddr … Driver
+    …` for each NIC, then the decision: `Setting to DPDK`, or `Interfaces
+    are not of same drv type` → `Setting to pktmmap`. On Azure, a NIC
+    showing only `hv_netvsc` with no `mlx5_core` twin has no accelerated
+    networking. One such NIC, often one added later, forces the whole
+    firewall to MMAP. **Pair the twins by MAC, not by name**: the VF
+    usually shows up as `Intf panos_ethN … mlx5_core`, but before the
+    rename it can take a free plain name (`Intf eth6 - Hwaddr <same MAC as
+    eth5> Driver mlx5_core`). So grep `Intf (panos_)?eth`, never just
+    `Intf eth`, or every NIC looks synthetic-only. An `ethN` whose MAC
+    shows up only in the later boot is a NIC added between the two boots.
+    The plugin's timezone can change between boots (`-0800` then `+0200`).
+  - Do **not** cite `pktmmapvmconfig.cfgdb.xml` in `sysd.log` as proof of
+    MMAP. sysd loads it at every boot, including a boot where the plugin
+    logged `Setting to DPDK`.
+  - Cross-check `var/log/pan/brdagent.log` (`Initialized interfaces in
+    DPDK|PKTMMAP mode`) and `sdb.txt` (`cfg.platform.vm.set.dpdk-pkt-io-disable`:
+    `True` means an admin disabled DPDK; read `peer.cfg.pktio.pkt-io-mode`
+    for the peer).
+  - Compare boots to date the change.
+- **Compute-bound or buffer-bound? Decide before hunting "the offending
+  session".**
+  - Read packet buffer and descriptor max values in `show running
+    resource-monitor`.
+  - PBP state is in `sdb.txt`: `sw.cmd.s1.dp0.packet-buffer-protection`
+    (`is-running`, `congestion`/`congestion-max`, `is-monitor-only`),
+    `sw.cmd.s1.dp0.pbp-zones`, and `flow_pbp_*` counters.
+  - The ingress-backlog auto-monitor is in `cfg.session.ingress_backlogs_*`
+    in `sdb.txt` (`trigger: False` means it never fired). The TSF has no
+    `ingress-backlogs` output.
+  - DP at 100% with buffers low and PBP idle means compute-bound. The load
+    is the sum of inspected traffic, and PBP/ingress-backlogs won't single
+    out a session. Say so, and give the customer a live peak procedure
+    instead: resource-monitor, delta counters, `ingress-backlogs`, `show
+    session packet-buffer-protection`, `min-kb`, two `show running
+    application statistics` 60 s apart, then `show session id`.
+- **Split the DP time by function with `> debug dataplane pow
+  performance`** — sum the `total-us` column per family: content
+  inspection (`ctd_token`, `sml_vm`, `regex_lookup`, `dfa_match`,
+  `appid_match`, `detector_run_*`) vs forwarding (`flow_fastpath`,
+  `flow_np`, `receive_pkt`) vs decompression (`zip_deflate`/`zip_inflate`)
+  vs policy (`policy_lookup`). `pbp_buf_latency` is wait time, not CPU —
+  exclude it from the shares. Counters back it: `ctd_pkt_slowpath` /
+  `pkt_recv` = share of packets through content inspection, `ctd_pscan_sw`
+  / `dfa_sw` = software pattern matching, `zip_process_sw` / `zip_sw_out` =
+  software decompression. A large `zip_sw_out` with `zip_*` ≈ 1 % of POW
+  time means disabling ZIP will not move the CPU — a common first step
+  that fails.
+- **Name the inspection that costs, from the config.** On a
+  Panorama-managed box count profile groups across rules in
+  `opt/pancfg/mgmt/sp/vsys1/sp-config.xml` (`<profile-setting><group>`
+  per rule): one group with AV + vulnerability + spyware + file-blocking
+  `any/any` + WildFire `any/any` on nearly every rule means every SMB,
+  SSH, backup and DB byte is streamed through CTD. Rules with application
+  `any` + port services and no application-override leave `unknown-tcp`
+  scanned up to `appid_unknown_max_pkts`. Heavy flows to look for in the
+  sorted application statistics: SMB (with `ctd_smb_outoforder_chunks`),
+  SSH, backup/replication, databases; undecrypted SSL is cheap per byte.
+- **Offending sessions cannot be ranked from a TSF** — the `show session
+  all` dump is capped at 1024 sessions with no byte counts. Use it only
+  for *who talks to whom* (count by application, destination IP:port,
+  zone pair), take the byte ranking from application statistics, and hand
+  over the live follow-ups: `show session all filter min-kb <N>
+  [application <app>]` then `show session id <id>`, `show running
+  resource-monitor second last 60` during a burst, and ACC / traffic logs
+  top destinations by bytes since the onset.
 
 ## Step 4 — the config
 
