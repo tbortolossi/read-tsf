@@ -6,6 +6,44 @@ version follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `read-tsf-sync` installs and updates the skill on machines with or
+  without GitHub. It is a bash script in the plugin's `bin/`, with a
+  PowerShell twin (`read-tsf-sync.ps1` and a `.cmd` launcher) for Windows
+  PowerShell 5.1 and later. Each run picks its source: an archive given on
+  the command line, else GitHub when it answers, else the newest release
+  archive in the current directory or in Downloads. Archives are checked
+  against their `.sha256`. Local edits are kept across updates, and an edit
+  that collides with the new release is kept under `pending/`.
+- `read-tsf-sync contribute` writes a Markdown document that the user reads
+  and e-mails themselves. It holds a summary, an evidence table (platform,
+  PAN-OS version, what was checked, what it showed), the changed files, the
+  checks that ran, a diff and the full text. A change to the skill's
+  documents needs evidence. Before anything is written, the new lines and
+  the text around them are checked:
+  - against the customer-data patterns;
+  - for domain names;
+  - for the hostname, serial, domain and addresses of the analyzed TSF
+    (`--tsf`);
+  - against a local `denylist.txt`.
+
+  A pull request is opened instead only from a git clone with a logged-in
+  `gh`, and only with `--yes`; its description is the same summary and
+  evidence. Neither path ever carries a binary or a file from outside the
+  skill.
+- `tools/check-no-customer-data.sh` also catches PAN-OS serials, MAC
+  addresses outside the documentation block, values of config elements that
+  hold names and secrets, and PAN-OS encrypted values.
+- `tools/intake.sh` turns a received contribution into a pull request under
+  the contributor's name. `--dry-run` only checks it. `tools/pack.sh` builds
+  the offline archive, and a release workflow attaches it to every `v*` tag.
+- A `read-tsf-sync` skill, a few lines long, so that Claude can run an
+  update or a contribution when asked.
+- `tools/test-sync.sh` runs either script end to end in a sandbox. CI runs
+  it with bash and PowerShell 7 on Linux, and with Windows PowerShell 5.1
+  and Git Bash on Windows.
+
 ### Fixed
 
 - `README.md` described the symptom map as covering "sessions" and

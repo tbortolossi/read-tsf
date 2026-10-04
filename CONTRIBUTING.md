@@ -25,6 +25,17 @@ discipline expected of new material.
 
 Deleting a wrong pointer is as welcome as adding a right one.
 
+## Without a GitHub account
+
+Make the change in the working copy that `read-tsf-sync` installed, then run
+`read-tsf-sync contribute -m "<summary>" --evidence "<platform> ;; <PAN-OS> ;;
+<what you ran> ;; <what it showed>" --tsf <the archive you analyzed>`. It
+writes one Markdown document: summary, evidence table, diff, full text.
+It refuses to write it if anything looks like customer data. Read it, then
+e-mail it to the maintainer, who opens the pull request for you with
+`tools/intake.sh`. The README section "Machines
+without GitHub" has the details.
+
 ## What does not belong here
 
 - Anything extracted from a real TSF.
