@@ -1,0 +1,655 @@
+#!/usr/bin/env bash
+# Install, update and contribute to the read-tsf skill, with or without GitHub.
+#
+#   read-tsf-sync install    [<read-tsf-X.Y.Z.tar.gz>] [--replace]
+#   read-tsf-sync update     [<read-tsf-X.Y.Z.tar.gz>]
+#   read-tsf-sync status
+#   read-tsf-sync contribute -m "<summary>" [-d "<details>"] [--author "Name <mail>"]
+#                            [--evidence "platform ;; PAN-OS ;; check ;; result"]...
+#                            [--no-evidence "<why>"] [--tsf <extracted-tsf>]
+#                            [--offline] [--yes] [--out <dir>]
+#
+# Where the skill comes from is detected: an archive given on the command
+# line wins; otherwise GitHub when git is installed and github.com answers;
+# otherwise the newest read-tsf-X.Y.Z.tar.gz in the current directory or in
+# Downloads. An offline machine needs nothing but tar.
+#
+# The working copy lives in $READ_TSF_HOME (default ~/.local/share/read-tsf,
+# %LOCALAPPDATA%\read-tsf on Windows — shared with read-tsf-sync.ps1) and is
+# registered with Claude Code as a directory marketplace. An existing
+# 'tbortolossi' marketplace from another source is only replaced with
+# --replace. READ_TSF_NO_REGISTER=1 leaves Claude Code alone (tests, CI).
+#
+# `contribute` turns your edits to the skill's own text files — nothing else
+# in the directory, never a binary — into one Markdown document (summary,
+# evidence table, diff, full text) that you read and e-mail yourself. Before
+# it is written, the new lines and the text around them are checked for
+# customer data: the repository's patterns, domain names, the identifiers
+# of the TSF you analyzed (--tsf) and your own denylist.txt. With a git clone and a logged-in gh it can instead open a pull
+# request, but only after you have seen the list of files and passed --yes.
+# Nothing here sends mail, encodes data, or talks to anything but git and gh.
+set -euo pipefail
+
+REPO_URL=${READ_TSF_REPO_URL:-https://github.com/tbortolossi/read-tsf.git}
+GH_REPO=tbortolossi/read-tsf
+MAINTAINER="Thomas Bortolossi <thomasbortolossi@gmail.com>"
+MARKET=tbortolossi
+PLUGIN=read-tsf@tbortolossi
+MANIFEST=plugins/read-tsf/.claude-plugin/plugin.json
+
+# What a contribution may carry. Same lists in read-tsf-sync.ps1 and
+# tools/intake.sh; the CI round trip fails if they drift.
+ALLOW_PATH='^(plugins/read-tsf/.+|tools/[^/]+|\.claude-plugin/marketplace\.json|\.github/workflows/[^/]+|[A-Z]+\.md)$'
+ALLOW_EXT='(\.(md|sh|ps1|cmd|json|yml|yaml|txt)|/bin/read-tsf-sync)$'
+MAX_FILE=524288
+
+case $(uname -s) in
+  MINGW*|MSYS*|CYGWIN*) WINDOWS=1 ;;
+  *) WINDOWS=0 ;;
+esac
+if [ -n "${READ_TSF_HOME:-}" ]; then HOME_DIR=$READ_TSF_HOME
+elif [ $WINDOWS = 1 ] && [ -n "${LOCALAPPDATA:-}" ]; then HOME_DIR=$(cygpath -u "$LOCALAPPDATA")/read-tsf
+else HOME_DIR=$HOME/.local/share/read-tsf
+fi
+WORK=$HOME_DIR/repo      # the copy Claude Code reads and you edit
+BASE=$HOME_DIR/base      # offline: the release as shipped, to compare against
+
+die()  { printf 'read-tsf-sync: %s\n' "$*" >&2; exit 1; }
+say()  { printf '%s\n' "$*"; }
+note() { printf '%s\n' "$*" >&2; }
+have() { command -v "$1" >/dev/null 2>&1; }
+usage() { sed -n '2,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+native() { if [ $WINDOWS = 1 ]; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+version_of() { sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "$1/$MANIFEST" 2>/dev/null | head -1; }
+newer() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]; }
+
+mode() {
+  if [ -d "$WORK/.git" ]; then echo online
+  elif [ -d "$BASE" ]; then echo offline
+  else echo none
+  fi
+}
+
+# --- text, hashes, what may leave the machine --------------------------------
+
+# A file as it is compared and shipped: no UTF-8 BOM, no CR, ends with LF.
+# read-tsf-sync.ps1 and tools/intake.sh normalize the same way, byte for byte.
+norm() { LC_ALL=C tr -d '\r' < "$1" | LC_ALL=C awk 'NR==1 && substr($0,1,3)=="\357\273\277" {$0=substr($0,4)} {print}'; }
+
+sha() {
+  if have sha256sum; then sha256sum | awk '{print $1}'
+  elif have shasum; then shasum -a 256 | awk '{print $1}'
+  else openssl dgst -sha256 | awk '{print $NF}'
+  fi
+}
+hashn() { if [ -f "$1" ]; then norm "$1" | sha; else echo -; fi; }
+
+allowed() { printf '%s' "$1" | grep -Eq "$ALLOW_PATH" && printf '%s' "$1" | grep -Eq "$ALLOW_EXT"; }
+is_text() { [ "$(LC_ALL=C tr -d '\000' < "$1" | wc -c)" -eq "$(wc -c < "$1")" ]; }
+
+files_in() { [ -d "$1" ] && (cd "$1" && find . -type f -not -path './.git/*' | sed 's|^\./||') || true; }
+
+base_commit() {
+  case $(mode) in
+    online)  git -C "$WORK" merge-base HEAD origin/main 2>/dev/null || git -C "$WORK" rev-parse HEAD ;;
+    offline) tr -d '[:space:]' < "$BASE/.read-tsf-release" 2>/dev/null || echo unknown ;;
+    *) echo unknown ;;
+  esac
+}
+
+base_tree() {   # the tree the working copy started from
+  case $(mode) in
+    offline) printf '%s' "$BASE" ;;
+    online)
+      if [ ! -d "$TMP/base" ]; then
+        mkdir -p "$TMP/base"
+        git -C "$WORK" archive "$(base_commit)" | tar -x -C "$TMP/base"
+      fi
+      printf '%s' "$TMP/base" ;;
+  esac
+}
+
+changes() {   # "op<TAB>path" for each contributable edit; the rest is reported, not sent
+  local base; base=$(base_tree)
+  { files_in "$base"; files_in "$WORK"; } | sort -u | while IFS= read -r p; do
+    local op
+    [ "$p" != .read-tsf-release ] || continue   # stamped at release time, never edited
+    if [ ! -f "$WORK/$p" ]; then op=delete
+    elif [ ! -f "$base/$p" ]; then op=add
+    elif [ "$(hashn "$WORK/$p")" != "$(hashn "$base/$p")" ]; then op=modify
+    else continue
+    fi
+    if ! allowed "$p"; then
+      [ $op = delete ] || note "not included (not part of the skill): $p"
+      continue
+    fi
+    if [ $op != delete ]; then
+      is_text "$WORK/$p" || { note "not included (binary): $p"; continue; }
+      [ "$(wc -c < "$WORK/$p")" -le $MAX_FILE ] || { note "not included (over $MAX_FILE bytes): $p"; continue; }
+    fi
+    printf '%s\t%s\n' "$op" "$p"
+  done
+}
+
+# --- carrying local edits across an update -----------------------------------
+
+save_edits() {   # save_edits <dir>
+  local dir=$1 base op p; base=$(base_tree)
+  mkdir -p "$dir/files"; : > "$dir/list"
+  changes 2>/dev/null | while IFS=$'\t' read -r op p; do
+    printf '%s\t%s\t%s\n' "$op" "$p" "$(hashn "$base/$p")" >> "$dir/list"
+    if [ "$op" != delete ]; then mkdir -p "$dir/files/$(dirname "$p")"; cp "$WORK/$p" "$dir/files/$p"; fi
+  done
+}
+
+restore_edits() {   # restore_edits <dir>: re-apply on the freshly updated WORK
+  local dir=$1 op p was now mine kept=0 pending
+  pending=$HOME_DIR/pending/$(date +%Y%m%d-%H%M%S)
+  while IFS=$'\t' read -r op p was; do
+    now=$(hashn "$WORK/$p"); mine=$(hashn "$dir/files/$p")
+    if [ "$now" = "$mine" ]; then
+      say "already in this release: $p"
+    elif [ "$now" = "$was" ]; then
+      if [ "$op" = delete ]; then rm -f "$WORK/$p"
+      else mkdir -p "$WORK/$(dirname "$p")"; cp "$dir/files/$p" "$WORK/$p"; fi
+      kept=$((kept + 1))
+    else
+      mkdir -p "$pending/$(dirname "$p")"
+      if [ "$op" = delete ]; then : > "$pending/$p.deleted"; else cp "$dir/files/$p" "$pending/$p"; fi
+      say "warning: $p changed upstream too; your version is in $pending/$p"
+    fi
+  done < "$dir/list"
+  [ $kept -eq 0 ] || say "your local edits were kept ($kept file(s))"
+}
+
+# --- where the skill comes from ----------------------------------------------
+
+github_up() {
+  have git || return 1
+  if have timeout; then
+    GIT_TERMINAL_PROMPT=0 timeout 20 git ls-remote -q "$REPO_URL" HEAD >/dev/null 2>&1
+  else
+    GIT_TERMINAL_PROMPT=0 git ls-remote -q "$REPO_URL" HEAD >/dev/null 2>&1
+  fi
+}
+
+find_archive() {   # every read-tsf-X.Y.Z.tar.gz in the usual places
+  local d dirs=("$PWD" "$HOME/Downloads" "$HOME/Téléchargements")
+  [ $WINDOWS = 0 ] || [ -z "${USERPROFILE:-}" ] || dirs+=("$(cygpath -u "$USERPROFILE")/Downloads")
+  for d in "${dirs[@]}"; do
+    [ -d "$d" ] && find "$d" -maxdepth 1 -name 'read-tsf-[0-9]*.[0-9]*.[0-9]*.tar.gz' 2>/dev/null
+  done
+  true
+}
+
+pick_source() {   # pick_source [<archive>] -> "online" or the archive path
+  if [ -n "${1:-}" ]; then printf '%s' "$1"; return; fi
+  if github_up; then echo online; return; fi
+  local best
+  best=$(find_archive | awk -F'read-tsf-' '{v=$NF; sub(/\.tar\.gz$/,"",v); print v "\t" $0}' | sort -V | tail -1 | cut -f2-)
+  if [ -n "$best" ]; then note "GitHub is not reachable; using $best"; printf '%s' "$best"; return; fi
+  die "GitHub is not reachable and no read-tsf-X.Y.Z.tar.gz was found here or in Downloads.
+Pass the archive: read-tsf-sync ${CMD:-install} /path/to/read-tsf-X.Y.Z.tar.gz"
+}
+
+verify_archive() {
+  local tgz=$1 sum="$1.sha256" want got
+  [ -f "$tgz" ] || die "no such archive: $tgz"
+  if [ -f "$sum" ]; then
+    want=$(awk '{print $1; exit}' "$sum"); got=$(sha < "$tgz")
+    [ "$want" = "$got" ] || die "checksum mismatch for $tgz — do not install it"
+    say "checksum ok"
+  else
+    say "note: no $(basename "$sum") beside the archive, integrity not checked"
+  fi
+}
+
+unpack() {   # unpack <archive> <dest>
+  local out=$TMP/unpack top
+  rm -rf "$out"; mkdir -p "$out"
+  tar -xzf "$1" -C "$out"
+  top=$(find "$out" -mindepth 1 -maxdepth 1 -type d | head -1)
+  [ -n "$top" ] && [ -f "$top/$MANIFEST" ] || die "$1 is not a read-tsf release archive"
+  rm -rf "$2"; mv "$top" "$2"
+}
+
+# Updates happen in place: a directory that is someone's current directory,
+# or holds the running launcher, cannot be renamed on Windows.
+drop_shipped() {   # remove from WORK what the old release shipped and what was edited
+  local p
+  { if [ "$(mode)" = online ]; then git -C "$WORK" ls-files; else files_in "$BASE"; fi
+    cut -f2 "$TMP/edits/list"; } | while IFS= read -r p; do rm -f "$WORK/$p"; done
+}
+copy_tree() { (cd "$1" && tar -cf - .) | (cd "$WORK" && tar -xf -); }
+
+# --- Claude Code registration ------------------------------------------------
+
+register() {
+  [ "${READ_TSF_NO_REGISTER:-}" != 1 ] || { say "READ_TSF_NO_REGISTER=1: Claude Code left untouched"; return; }
+  local where; where=$(native "$WORK")
+  if ! have claude; then
+    say "claude is not on PATH. Run these once it is:"
+    say "  claude plugin marketplace add \"$where\""
+    say "  claude plugin install $PLUGIN"
+    return
+  fi
+  local current
+  current=$(claude plugin marketplace list 2>/dev/null | grep -A3 "$MARKET" || true)
+  if [ -n "$current" ] && ! printf '%s' "$current" | grep -qF "$where"; then
+    if [ "$REPLACE" != 1 ]; then
+      say "Claude Code already has a '$MARKET' marketplace from another source:"
+      printf '%s\n' "$current" | sed 's/^/  /'
+      say "Run 'read-tsf-sync install --replace' to point it at $where instead."
+      return 1
+    fi
+    say "replacing the existing '$MARKET' marketplace with $where"
+    claude plugin marketplace remove "$MARKET" >/dev/null
+    current=
+  fi
+  [ -n "$current" ] || claude plugin marketplace add "$where"
+  claude plugin marketplace update "$MARKET"
+  if claude plugin list 2>/dev/null | grep -qF "$PLUGIN"; then claude plugin update "$PLUGIN"
+  else claude plugin install "$PLUGIN"; fi
+  say "restart Claude Code to load read-tsf $(version_of "$WORK")"
+}
+
+link_self() {   # Unix only, and only when ~/.local/bin is already on PATH
+  [ $WINDOWS = 0 ] || return 0
+  local bin=$HOME/.local/bin
+  case ":$PATH:" in *":$bin:"*) ln -sf "$WORK/plugins/read-tsf/bin/read-tsf-sync" "$bin/read-tsf-sync" ;; esac
+}
+
+# --- commands ----------------------------------------------------------------
+
+cmd_install() {
+  if [ "$(mode)" != none ]; then
+    [ "$REPLACE" = 1 ] || die "already installed in $HOME_DIR ($(mode) mode) — use 'update'"
+    register; return
+  fi
+  local src; src=$(pick_source "${1:-}")
+  mkdir -p "$HOME_DIR"
+  if [ "$src" = online ]; then
+    git clone --quiet "$REPO_URL" "$WORK"
+  else
+    verify_archive "$src"
+    unpack "$src" "$BASE"
+    cp -R "$BASE" "$WORK"
+  fi
+  link_self
+  say "installed read-tsf $(version_of "$WORK") in $WORK ($(mode) mode)"
+  register
+}
+
+cmd_update() {
+  local m; m=$(mode)
+  [ "$m" != none ] || die "not installed — run 'install' first"
+  local before src op p; before=$(version_of "$WORK")
+  if [ -z "${1:-}" ] && [ "$m" = online ]; then   # a clone stays a clone unless told otherwise
+    github_up || die "GitHub is not reachable. This copy follows it; pass a release archive to switch it to offline updates."
+    src=online
+  else
+    src=$(pick_source "${1:-}")
+  fi
+
+  if [ "$src" != online ]; then
+    verify_archive "$src"
+    unpack "$src" "$TMP/new"
+    local new; new=$(version_of "$TMP/new")
+    if ! newer "$new" "$before" && [ "${FORCE:-}" != 1 ]; then
+      [ "$new" != "$before" ] || { say "read-tsf $before is already installed"; return; }
+      die "$src is $new, older than the installed $before (FORCE=1 to downgrade)"
+    fi
+  fi
+  save_edits "$TMP/edits"
+
+  if [ "$src" = online ] && [ "$m" = online ]; then
+    while IFS=$'\t' read -r op p _; do   # back to HEAD; the edits are saved
+      if git -C "$WORK" ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then git -C "$WORK" checkout -q -- "$p"
+      else rm -f "$WORK/$p"; fi
+    done < "$TMP/edits/list"
+    git -C "$WORK" pull --ff-only --quiet || {
+      restore_edits "$TMP/edits" >/dev/null
+      cp -R "$TMP/edits" "$HOME_DIR/pending-edits"
+      die "could not fast-forward $WORK (local commits?); your edits are back in the tree, a copy is in $HOME_DIR/pending-edits"
+    }
+  elif [ "$src" = online ]; then   # offline copy, GitHub reachable now: become a clone
+    git clone --quiet "$REPO_URL" "$TMP/clone"
+    local new; new=$(version_of "$TMP/clone")
+    if newer "$before" "$new" && [ "${FORCE:-}" != 1 ]; then
+      die "GitHub has $new, older than the installed $before (FORCE=1 to switch anyway)"
+    fi
+    drop_shipped
+    mv "$TMP/clone/.git" "$WORK/.git"
+    git -C "$WORK" reset -q --hard
+    rm -rf "$BASE"
+    say "this copy now follows GitHub"
+  else
+    drop_shipped
+    [ "$m" != online ] || mv "$WORK/.git" "$HOME_DIR/git-$(date +%Y%m%d-%H%M%S)"   # set aside, not deleted
+    copy_tree "$TMP/new"
+    rm -rf "$BASE"; cp -R "$TMP/new" "$BASE"
+  fi
+  restore_edits "$TMP/edits"
+  say "read-tsf $before -> $(version_of "$WORK") ($(mode) mode)"
+  register
+}
+
+cmd_status() {
+  say "working copy: $(native "$WORK")"
+  say "mode:         $(mode)"
+  [ "$(mode)" != none ] || return 0
+  say "version:      $(version_of "$WORK")"
+  say "base commit:  $(base_commit)"
+  local list; list=$(changes)
+  if [ -n "$list" ]; then say "local edits:"; printf '%s\n' "$list" | sed 's/^/  /'
+  else say "local edits:  none"; fi
+}
+
+# --- contributing ------------------------------------------------------------
+
+# Domains a contribution may name. Anything else on a new line is a hostname
+# or a customer domain until a human says otherwise.
+TLDS='com|net|org|fr|de|be|ch|uk|it|es|nl|lu|at|se|no|dk|fi|pl|pt|io|eu|us|ca|au|jp|info|biz|local|corp|lan|intra|internal|int'
+KNOWN_DOMAINS='(^|\.)(example\.(com|net|org)|anon\.internal|paloaltonetworks\.com|github\.com|githubusercontent\.com|anthropic\.com|claude\.com|claude\.ai|keepachangelog\.com|semver\.org|shellcheck\.net)$'
+TSF_KEYS='hostname|serial|domain|ip-address|public-ip-address|ipv6-address|mac-address|default-gateway'
+
+new_lines() {   # new_lines <base file or -> <work file>: lines the edit brings in
+  if [ -f "$1" ]; then norm "$1" > "$TMP/nl.base"; norm "$2" | grep -vxF -f "$TMP/nl.base" || true
+  else norm "$2"; fi
+}
+
+tsf_identifiers() {   # identity of the device being analyzed, from show system info
+  local dir=$1 f
+  [ -e "$dir" ] || die "--tsf: no such file or directory: $dir"
+  if [ -f "$dir" ]; then f=("$dir"); else mapfile -t f < <(find "$dir" -path '*/tmp/cli/techsupport_*.txt' -type f 2>/dev/null); fi
+  [ ${#f[@]} -gt 0 ] || die "--tsf: no tmp/cli/techsupport_*.txt under $dir"
+  grep -hE "^[[:space:]]*($TSF_KEYS):[[:space:]]*[^[:space:]]" "${f[@]}" 2>/dev/null |
+    sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]+$//' |
+    grep -viE '^(unknown|none|n/a|off|on|yes|no|0\.0\.0\.0|::)$' | awk 'length($0) >= 4' | sort -u
+}
+
+# Every check that stands between an edit and the outside world. Runs on the
+# lines the edit adds and on the text written around it (summary, evidence).
+scan_contribution() {   # sets SCAN_REPORT (markdown lines) or dies
+  local scan=$TMP/scan op p n=0 hits=0
+  rm -rf "$scan"; mkdir -p "$scan"
+  while IFS=$'\t' read -r op p; do
+    [ "$op" != delete ] || continue
+    new_lines "$(base_tree)/$p" "$WORK/$p" > "$scan/${p//\//__}"
+    n=$((n + $(wc -l < "$scan/${p//\//__}")))
+  done < "$TMP/changes"
+  cp "$TMP/human" "$scan/summary-and-evidence"
+
+  (cd "$WORK" && tools/check-no-customer-data.sh "$scan"/*) > "$TMP/scan.out" 2>&1 || hits=1
+
+  local domains
+  domains=$(grep -HinoE "([a-z0-9-]+\.)+($TLDS)\.?([^a-z0-9-]|$)" "$scan"/* 2>/dev/null |
+    sed -E 's/[^a-zA-Z0-9]+$//' | awk -F: '{print $NF}' | tr '[:upper:]' '[:lower:]' | sort -u |
+    grep -vE "$KNOWN_DOMAINS" || true)
+  if [ -n "$domains" ]; then hits=1; printf '%s\n' "$domains" | sed 's/^/domain name: /' >> "$TMP/scan.out"; fi
+
+  : > "$TMP/deny"
+  local deny_src="" tsf_n=0 deny_n=0
+  if [ -f "$HOME_DIR/denylist.txt" ]; then
+    grep -vE '^[[:space:]]*(#|$)' "$HOME_DIR/denylist.txt" | sed -E 's/[[:space:]]+$//' >> "$TMP/deny" || true
+    deny_n=$(wc -l < "$TMP/deny" | tr -d ' ')
+  fi
+  if [ -n "$TSF" ]; then
+    tsf_identifiers "$TSF" > "$TMP/tsf-ids"
+    tsf_n=$(wc -l < "$TMP/tsf-ids" | tr -d ' '); cat "$TMP/tsf-ids" >> "$TMP/deny"
+  fi
+  if [ -s "$TMP/deny" ] && grep -qiF -f "$TMP/deny" "$scan"/*; then
+    hits=1
+    grep -HinF -f "$TMP/deny" "$scan"/* | sed 's/^/identifier from the TSF or the denylist: /' >> "$TMP/scan.out"
+  fi
+
+  if [ $hits = 1 ]; then
+    grep -v '^no customer data\|^Refusing\|^$' "$TMP/scan.out" | sed "s|$scan/||; s|__|/|g" >&2
+    note ""
+    note "Use the placeholders in CLAUDE.md (192.0.2.x, hostNNN, userNNN, ZONE-0012, <serial>)."
+    die "fix the above before contributing — nothing was written or sent"
+  fi
+  [ -n "$TSF" ] && deny_src="$tsf_n identifier(s) of the analyzed TSF (hostname, serial, domain, addresses)" ||
+    deny_src="no TSF given (--tsf), so its own hostname and serial were not looked for"
+  SCAN_REPORT="- Customer-data patterns — addresses outside the documentation ranges, e-mail, serials, MAC, config values, secrets, domain names — on $n new line(s) and the text above: no hit.
+- $deny_src: no hit.
+- Personal denylist: $(case $deny_n in 0) echo "none on this machine" ;; 1) echo "1 entry, no hit" ;; *) echo "$deny_n entries, no hit" ;; esac)."
+  say "checks passed: nothing that looks like customer data in $n new line(s)"
+}
+
+fence_for() {   # a code fence longer than any backtick run in the file
+  local n; n=$(LC_ALL=C grep -o '`*' "$1" | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')
+  [ "$n" -ge 3 ] || n=2
+  printf '%*s' $((n + 1)) '' | tr ' ' '`'
+}
+
+file_diff() {   # file_diff <op> <path>: unified diff of the normalized texts
+  local op=$1 p=$2 d=$TMP/diff a b
+  rm -rf "$d"; mkdir -p "$d/a/$(dirname "$p")" "$d/b/$(dirname "$p")"
+  a=/dev/null; b=/dev/null
+  [ "$op" = add ]    || { norm "$(base_tree)/$p" > "$d/a/$p"; a=a/$p; }
+  [ "$op" = delete ] || { norm "$WORK/$p" > "$d/b/$p"; b=b/$p; }
+  if have git; then
+    (cd "$d" && git diff --no-index --no-color --src-prefix= --dst-prefix= -- "$a" "$b") |
+      grep -vE '^(diff --git|index |new file mode|deleted file mode)' || true
+  elif have diff; then
+    (cd "$d" && diff -u --label "$a" --label "$b" "${a/#\/dev\/null//dev/null}" "$b") || true
+  fi
+}
+
+evidence_row() {   # "platform ;; version ;; check ;; result" -> a table row
+  local IFS=$'\x1f' f; read -r -a f <<< "${1// ;; /$'\x1f'}"
+  local check=${f[2]:-}
+  [ -z "$check" ] || [[ $check == *'`'* ]] || check="\`$check\`"
+  printf '| %s | %s | %s | %s |\n' "${f[0]:-}" "${f[1]:-}" "${check//|/\\|}" "${f[3]:-}"
+}
+
+write_markdown() {   # write_markdown <out>: the contribution, for a human first
+  local out=$1 subject op p fence diffs=$TMP/diffs plus minus
+  subject=$(conventional "$SUMMARY")
+  mkdir -p "$diffs"
+  {
+    say "<!-- read-tsf contribution"
+    say "Format: 3"
+    say "From: $AUTHOR"
+    say "Base-Version: $(version_of "$WORK")"
+    say "Base-Commit: $(base_commit)"
+    say "Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    say "Subject: $subject"
+    say "-->"
+    say ""
+    say "# $subject"
+    say ""
+    say "Contribution to **read-tsf $(version_of "$WORK")** from ${AUTHOR% <*}, $(date -u +%Y-%m-%d)."
+    say "Send this file, as an attachment, to $MAINTAINER."
+    say ""
+    say "<!-- read-tsf pr-body -->"
+    say "## Summary"
+    say ""
+    say "${DETAILS:-$SUMMARY}"
+    say ""
+    say "## Evidence"
+    say ""
+    if [ ${#EVIDENCE[@]} -gt 0 ]; then
+      say "| Platform | PAN-OS | What was checked | Result |"
+      say "|---|---|---|---|"
+      for e in "${EVIDENCE[@]}"; do evidence_row "$e"; done
+    else
+      say "None given: $NO_EVIDENCE"
+    fi
+    say ""
+    say "## Changes"
+    say ""
+    say "| File | Change | Lines |"
+    say "|---|---|---|"
+    local i=0
+    while IFS=$'\t' read -r op p; do
+      i=$((i + 1)); file_diff "$op" "$p" > "$diffs/$i"
+      plus=$(tail -n +3 "$diffs/$i" | grep -c '^+' || true); minus=$(tail -n +3 "$diffs/$i" | grep -c '^-' || true)
+      if [ -s "$diffs/$i" ]; then say "| \`$p\` | $op | +$plus −$minus |"; else say "| \`$p\` | $op | |"; fi
+    done < "$TMP/changes"
+    say ""
+    say "## Checks run before sending"
+    say ""
+    say "$SCAN_REPORT"
+    say "<!-- read-tsf pr-body end -->"
+    say ""
+    say "## Diff"
+    say ""
+    cat "$diffs"/* > "$TMP/alldiff" 2>/dev/null || true
+    if [ -s "$TMP/alldiff" ]; then
+      fence=$(fence_for "$TMP/alldiff"); say "${fence}diff"; cat "$TMP/alldiff"; say "$fence"
+    else
+      say "No diff tool on this machine; the full text below is what counts."
+    fi
+    say ""
+    say "## Full text of the changed files"
+    say ""
+    say "Read by \`tools/intake.sh\`. Do not edit below this line."
+    say ""
+    while IFS=$'\t' read -r op p; do
+      say "### \`$p\` ($op)"
+      say ""
+      if [ "$op" = delete ]; then
+        say "<!-- read-tsf file: delete $p base=$(hashn "$(base_tree)/$p") lines=0 -->"
+      else
+        norm "$WORK/$p" > "$TMP/body"; fence=$(fence_for "$TMP/body")
+        say "<!-- read-tsf file: $op $p base=$(hashn "$(base_tree)/$p") lines=$(wc -l < "$TMP/body" | tr -d ' ') -->"
+        say "${fence}text"; cat "$TMP/body"; say "$fence"
+      fi
+      say ""
+    done < "$TMP/changes"
+    say "<!-- read-tsf end -->"
+  } > "$out"
+}
+
+cmd_contribute() {
+  SUMMARY="" DETAILS="" AUTHOR="" NO_EVIDENCE="" TSF="" EVIDENCE=()
+  local offline=0 yes=0 out=$PWD op p
+  while [ $# -gt 0 ]; do
+    case $1 in
+      -m) SUMMARY=$2; shift 2 ;;
+      -d) DETAILS=$2; shift 2 ;;
+      --evidence) EVIDENCE+=("$2"); shift 2 ;;
+      --no-evidence) NO_EVIDENCE=$2; shift 2 ;;
+      --tsf) TSF=$2; shift 2 ;;
+      --author) AUTHOR=$2; shift 2 ;;
+      --offline) offline=1; shift ;;
+      --yes) yes=1; shift ;;
+      --out) out=$2; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  [ -n "$SUMMARY" ] || die "say what the change is: -m \"fix the GP log path on 11.1\""
+  [ "$(mode)" != none ] || die "not installed — nothing to contribute"
+
+  changes > "$TMP/changes"
+  [ -s "$TMP/changes" ] || die "no edits to the skill in $WORK"
+  say "this contribution carries:"; sed 's/^/  /' "$TMP/changes"
+
+  if [ ${#EVIDENCE[@]} -eq 0 ] && [ -z "$NO_EVIDENCE" ] && grep -q $'\tplugins/read-tsf/skills/read-tsf/' "$TMP/changes"; then
+    die "say where it was verified, once per archive:
+  --evidence \"PA-3220 ;; 11.1.6 ;; grep -c 'IKE SA' var/log/pan/ikemgr.log ;; one line per rekey\"
+or, for a change that makes no new claim: --no-evidence \"typo\""
+  fi
+
+  if [ -z "$AUTHOR" ] && have git; then
+    local n e
+    n=$(git -C "$WORK" config user.name 2>/dev/null || true); e=$(git -C "$WORK" config user.email 2>/dev/null || true)
+    [ -z "$n" ] || [ -z "$e" ] || AUTHOR="$n <$e>"
+  fi
+  [ -n "$AUTHOR" ] || die "say who you are: --author \"First Last <you@example.com>\""
+
+  # The rule of this repository applies before anything leaves the machine.
+  { say "$SUMMARY"; say "$DETAILS"; printf '%s\n' "${EVIDENCE[@]+"${EVIDENCE[@]}"}"; say "$NO_EVIDENCE"; } > "$TMP/human"
+  scan_contribution
+
+  local why=""
+  if   [ $offline = 1 ];                 then why="--offline was given"
+  elif [ "$(mode)" != online ];          then why="this copy was installed from an archive, not cloned"
+  elif ! have gh;                        then why="gh is not installed"
+  elif ! gh auth status >/dev/null 2>&1; then why="gh is not logged in (gh auth login)"
+  elif ! gh api "repos/$GH_REPO" --silent >/dev/null 2>&1; then why="GitHub does not answer"
+  fi
+  if [ -n "$why" ]; then
+    say "writing a file to e-mail ($why)"
+    contribute_file "$out"
+  elif [ $yes = 1 ]; then
+    contribute_pr
+  else
+    say ""
+    say "gh is logged in: rerun with --yes to open a pull request on $GH_REPO with these files,"
+    say "or with --offline to write a file to e-mail instead. Nothing was sent."
+  fi
+}
+
+contribute_pr() {
+  local branch remote=origin title op p
+  title=$(conventional "$SUMMARY")
+  write_markdown "$TMP/contribution.md"
+  sed -n '/^<!-- read-tsf pr-body -->$/,/^<!-- read-tsf pr-body end -->$/p' "$TMP/contribution.md" | sed '1d;$d' > "$TMP/pr-body.md"
+  # shellcheck disable=SC2016  # the backticks are Markdown
+  printf '\nSent with `read-tsf-sync contribute` from read-tsf %s.\n' "$(version_of "$WORK")" >> "$TMP/pr-body.md"
+  branch="contrib/$(date +%Y%m%d)-$(printf '%s' "$SUMMARY" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | cut -c1-40 | sed 's/-$//')"
+  git -C "$WORK" switch -q -c "$branch"
+  local paths=()
+  while IFS=$'\t' read -r op p; do
+    paths+=("$p")
+    if [ "$op" = delete ]; then git -C "$WORK" rm -q --cached -- "$p"; else git -C "$WORK" add -- "$p"; fi
+  done < "$TMP/changes"
+  git -C "$WORK" -c user.name="${AUTHOR% <*}" -c user.email="$(printf '%s' "$AUTHOR" | sed 's/.*<\(.*\)>.*/\1/')" \
+    commit -q -m "$title" ${DETAILS:+-m "$DETAILS"}
+  if [ "$(gh api "repos/$GH_REPO" --jq .permissions.push 2>/dev/null)" != true ]; then
+    gh repo fork "$GH_REPO" --remote --remote-name fork >/dev/null 2>&1 || true
+    remote=fork
+  fi
+  git -C "$WORK" push -q -u "$remote" "$branch"
+  local head=$branch
+  [ "$remote" = origin ] || head="$(gh api user --jq .login):$branch"
+  (cd "$WORK" && gh pr create --repo "$GH_REPO" --head "$head" --base main --title "$title" --body-file "$TMP/pr-body.md")
+  # Back on main with the edit still in the tree, so the skill keeps it until the merge.
+  git -C "$WORK" switch -q main
+  git -C "$WORK" checkout -q "$branch" -- "${paths[@]}" 2>/dev/null || true
+  git -C "$WORK" reset -q -- "${paths[@]}" 2>/dev/null || true
+  say "pull request opened; your copy keeps the edit until 'update' brings the merged version"
+}
+
+contribute_file() {
+  local dir=$1 out
+  [ -d "$dir" ] && [ -w "$dir" ] || dir=$HOME_DIR/outbox
+  mkdir -p "$dir"
+  out="$dir/read-tsf-$(version_of "$WORK")-contribution-$(date +%Y%m%d-%H%M%S).md"
+  write_markdown "$out"
+  say ""
+  say "wrote $(native "$out")"
+  say "It is a Markdown document: read it before sending — summary, evidence, diff, then the full text."
+  say "E-mail it yourself, as an attachment, to $MAINTAINER"
+  say "subject: [read-tsf] $(conventional "$SUMMARY")"
+  say "Your copy keeps the edit; 'update' carries it over until a release includes it."
+}
+
+conventional() {
+  if printf '%s' "$1" | grep -qE '^[a-z]+(\([a-z0-9-]+\))?!?: '; then printf '%s' "$1"
+  else printf 'docs(read-tsf): %s' "$1"; fi
+}
+
+REPLACE=0
+args=()
+for a in "$@"; do
+  if [ "$a" = --replace ]; then REPLACE=1; else args+=("$a"); fi
+done
+set -- ${args[@]+"${args[@]}"}
+CMD=${1:-}
+
+case $CMD in
+  install)    shift; cmd_install "$@" ;;
+  update)     shift; cmd_update "$@" ;;
+  status)     shift; cmd_status ;;
+  contribute) shift; cmd_contribute "$@" ;;
+  -h|--help|help) usage 0 ;;
+  *) usage ;;
+esac

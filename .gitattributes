@@ -1,0 +1,6 @@
+# Release archives (tools/pack.sh, git archive) stamp the commit they were
+# built from, so an offline contribution names the base it applies to.
+.read-tsf-release export-subst
+
+# cmd.exe misreads labels and long lines in LF-only batch files.
+*.cmd text eol=crlf
