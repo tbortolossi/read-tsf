@@ -1,0 +1,32 @@
+name: Release
+
+# A pushed vX.Y.Z tag publishes the offline archive that read-tsf-sync
+# installs on machines without GitHub access.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checks
+        run: |
+          tools/check-no-customer-data.sh
+          tools/validate.sh
+
+      - name: Pack and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tools/pack.sh "$GITHUB_REF_NAME"
+          notes=$(awk -v v="${GITHUB_REF_NAME#v}" '$0 ~ "^## \\[" v "\\]" {on=1; next} /^## \[/ {on=0} on' CHANGELOG.md)
+          gh release create "$GITHUB_REF_NAME" dist/read-tsf-*.tar.gz dist/read-tsf-*.tar.gz.sha256 \
+            --title "read-tsf ${GITHUB_REF_NAME#v}" --notes "${notes:-See CHANGELOG.md}"
