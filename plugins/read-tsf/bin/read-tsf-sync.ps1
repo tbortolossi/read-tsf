@@ -116,14 +116,23 @@ function Same([string]$a, [string]$b) {   # raw bytes equal is the fast path
 function Allowed([string]$p) { return ($p -cmatch $AllowPath) -and ($p -cmatch $AllowExt) }
 function IsText([string]$path) { return [Array]::IndexOf([IO.File]::ReadAllBytes($path), [byte]0) -lt 0 }
 
+# Relative paths are built from entry names, never by cutting a prefix off a
+# full path: Windows hands out 8.3 short names (C:\Users\RUNNER~1) for one
+# spelling of a directory and long names for another.
 function FilesIn([string]$root) {
-  if (-not (Test-Path $root)) { return @() }
-  $full = (Resolve-Path $root).Path.TrimEnd('\', '/')
-  $list = Get-ChildItem -LiteralPath $full -Recurse -File -Force | ForEach-Object {
-    $rel = $_.FullName.Substring($full.Length + 1) -replace '\\', '/'
-    if (-not ($rel -eq '.git' -or $rel.StartsWith('.git/'))) { $rel }
+  if (-not (Test-Path -LiteralPath $root -PathType Container)) { return @() }
+  $out = New-Object 'System.Collections.Generic.List[string]'
+  $todo = New-Object 'System.Collections.Generic.Stack[object]'
+  $todo.Push(@((Get-Item -LiteralPath $root -Force), ''))
+  while ($todo.Count) {
+    $d, $rel = $todo.Pop()
+    foreach ($e in $d.GetFileSystemInfos()) {
+      if ($rel) { $r = "$rel/$($e.Name)" } else { $r = $e.Name }
+      if ($e -is [IO.DirectoryInfo]) { if ($r -ne '.git') { $todo.Push(@($e, $r)) } }
+      else { $out.Add($r) }
+    }
   }
-  return @($list)
+  return $out.ToArray()
 }
 function P([string]$root, [string]$rel) { return Join-Path $root ($rel -replace '/', [IO.Path]::DirectorySeparatorChar) }
 
