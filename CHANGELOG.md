@@ -6,6 +6,46 @@ version follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-10-04
+
+### Added
+
+- `SKILL.md`: a "DP CPU — onset and attribution" section. Date the onset
+  against HA state changes; check VM-Series sizing against the licence's
+  core cap and the packet-IO mode (DPDK or PacketMMAP); decide
+  compute-bound or buffer-bound from PBP and ingress-backlog state in
+  `sdb.txt`; split DP time by function with `debug dataplane pow
+  performance`; name the costly inspection from the config. Two reading
+  traps: per-process 94–100 % for `pktproc` in dp-monitor is busy-polling
+  on the PA-3200, not load, and in HA an error is a cause only if the peer
+  lacks it.
+- `SKILL.md`: `--- panio` blocks in `dp-monitor.log` also carry `show
+  session info` and the global counters with a per-second rate, a
+  pre-incident time series for any counter.
+- `TSF-GUIDE.md` §3: `debug dataplane pow performance`.
+- `TSF-GUIDE.md` §4, new rows:
+  - an active HA member black-holing traffic with links up — the passive
+    peer's `pkt_recv` against the active's `ha_msg_sent`, and the noise
+    both peers share;
+  - SFP model, optical levels, PAUSE frames and MAC errors in `sdb.txt`
+    (`sys.s1.p<N>.phy|detail|cfg|stats`), with the insertion history in
+    `brdagent.log`;
+  - where frames are lost — CPU vs MAC counters of `show counter interface
+    all` on both ends of HA2;
+  - why a VM-Series runs PacketMMAP instead of DPDK, per boot, from
+    `pan_vm_plugin.log`, pairing NIC twins by MAC.
+
+### Changed
+
+- The PA-3250 on 11.1 behaves like the PA-1400 in dp-monitor:
+  `bcm_g_cntr_stats` fails with a Python `SyntaxError` and
+  `dpc_nica_stats` prints `NICA FPGA not available`.
+
+### Fixed
+
+- `tools/validate.sh` checks links only in files git would commit, so a
+  note under an ignored directory no longer blocks `tools/intake.sh`.
+
 ## [1.2.0] — 2026-10-04
 
 ### Added
