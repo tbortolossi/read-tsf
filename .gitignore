@@ -26,3 +26,6 @@ running-config.xml
 *~
 .venv/
 __pycache__/
+
+# Release archives built by tools/pack.sh.
+dist/
