@@ -21,7 +21,7 @@ jobs:
         run: tools/check-no-customer-data.sh
 
       - name: Shell scripts
-        run: shellcheck tools/*.sh
+        run: shellcheck tools/*.sh plugins/read-tsf/bin/read-tsf-sync
 
       - name: Manifests, skill and links
         run: tools/validate.sh
@@ -32,3 +32,25 @@ jobs:
         run: |
           ! tools/coverage.sh 2>/dev/null
           tools/coverage.sh /nonexistent 2>&1 | grep -q "not a directory"
+
+      - name: read-tsf-sync, bash
+        run: tools/test-sync.sh bash
+
+      - name: read-tsf-sync, PowerShell 7
+        run: tools/test-sync.sh ps
+
+  windows:
+    # The machines this has to work on: Windows PowerShell 5.1 as shipped,
+    # and Git Bash where Claude Code brought it along.
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: read-tsf-sync, Windows PowerShell 5.1
+        run: PWSH=powershell.exe tools/test-sync.sh ps
+
+      - name: read-tsf-sync, Git Bash
+        run: tools/test-sync.sh bash
