@@ -91,7 +91,7 @@ hashn() { if [ -f "$1" ]; then norm "$1" | sha; else echo -; fi; }
 allowed() { printf '%s' "$1" | grep -Eq "$ALLOW_PATH" && printf '%s' "$1" | grep -Eq "$ALLOW_EXT"; }
 is_text() { [ "$(LC_ALL=C tr -d '\000' < "$1" | wc -c)" -eq "$(wc -c < "$1")" ]; }
 
-files_in() { [ -d "$1" ] && (cd "$1" && find . -type f -not -path './.git/*' | sed 's|^\./||') || true; }
+files_in() { if [ -d "$1" ]; then (cd "$1" && find . -type f -not -path './.git/*' | sed 's|^\./||'); fi; }
 
 base_commit() {
   case $(mode) in
@@ -213,7 +213,7 @@ unpack() {   # unpack <archive> <dest>
   rm -rf "$out"; mkdir -p "$out"
   tar -xzf "$1" -C "$out"
   top=$(find "$out" -mindepth 1 -maxdepth 1 -type d | head -1)
-  [ -n "$top" ] && [ -f "$top/$MANIFEST" ] || die "$1 is not a read-tsf release archive"
+  if [ -z "$top" ] || [ ! -f "$top/$MANIFEST" ]; then die "$1 is not a read-tsf release archive"; fi
   rm -rf "$2"; mv "$top" "$2"
 }
 
@@ -413,8 +413,8 @@ scan_contribution() {   # sets SCAN_REPORT (markdown lines) or dies
     note "Use the placeholders in CLAUDE.md (192.0.2.x, hostNNN, userNNN, ZONE-0012, <serial>)."
     die "fix the above before contributing — nothing was written or sent"
   fi
-  [ -n "$TSF" ] && deny_src="$tsf_n identifier(s) of the analyzed TSF (hostname, serial, domain, addresses)" ||
-    deny_src="no TSF given (--tsf), so its own hostname and serial were not looked for"
+  if [ -n "$TSF" ]; then deny_src="$tsf_n identifier(s) of the analyzed TSF (hostname, serial, domain, addresses)"
+  else deny_src="no TSF given (--tsf), so its own hostname and serial were not looked for"; fi
   SCAN_REPORT="- Customer-data patterns — addresses outside the documentation ranges, e-mail, serials, MAC, config values, secrets, domain names — on $n new line(s) and the text above: no hit.
 - $deny_src: no hit.
 - Personal denylist: $(case $deny_n in 0) echo "none on this machine" ;; 1) echo "1 entry, no hit" ;; *) echo "$deny_n entries, no hit" ;; esac)."
@@ -437,7 +437,7 @@ file_diff() {   # file_diff <op> <path>: unified diff of the normalized texts
     (cd "$d" && git diff --no-index --no-color --src-prefix= --dst-prefix= -- "$a" "$b") |
       grep -vE '^(diff --git|index |new file mode|deleted file mode)' || true
   elif have diff; then
-    (cd "$d" && diff -u --label "$a" --label "$b" "${a/#\/dev\/null//dev/null}" "$b") || true
+    (cd "$d" && diff -u --label "$a" --label "$b" "$a" "$b") || true
   fi
 }
 
@@ -620,7 +620,7 @@ contribute_pr() {
 
 contribute_file() {
   local dir=$1 out
-  [ -d "$dir" ] && [ -w "$dir" ] || dir=$HOME_DIR/outbox
+  if [ ! -d "$dir" ] || [ ! -w "$dir" ]; then dir=$HOME_DIR/outbox; fi
   mkdir -p "$dir"
   out="$dir/read-tsf-$(version_of "$WORK")-contribution-$(date +%Y%m%d-%H%M%S).md"
   write_markdown "$out"
