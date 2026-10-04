@@ -593,24 +593,6 @@ queues held by one-way/TAP feeds).
 A "dataplane at 100 %" case needs three answers: when did it start, is the
 box sized for the load, and which part of the DP eats the time.
 
-- **Per-process % in dp-monitor `processes`/`top` is not DP load.** On the
-  PA-3200 (Cavium) `all_pktproc_*`, `flow_ctrl`, `flow_mgmt` and
-  `pktlog_forwarding` show 94–100 % in every snapshot — busy-polling —
-  including on a node that stayed **passive** for days, while
-  `> show running resource-monitor` on that node reads 1–3 %. "pktproc
-  pinned at 100 % while passive = deadlock" is a misreading. Prove it with
-  the passive peer's dp-monitor, and quote resource-monitor (or the
-  resource-monitor dump embedded in each `--- panio` block) as the load.
-  The raw `processes` lines carry no timestamp; date them from the
-  enclosing `<ts>  --- processes` header.
-- **In HA, an error on the suspect node is a cause only if the peer lacks
-  it.** Count the same pattern per day on both TSFs. If the counts match,
-  it is background noise. When the active node "loses traffic" with links
-  up, use the HA2 cross-check (TSF-GUIDE, per-problem table): the active's
-  `ha_msg_sent` rate against the passive's `pkt_recv`. Then localize the
-  loss with the CPU-vs-MAC counters of `show counter interface all` on
-  both ends of HA2 (TSF-GUIDE, "where frames are lost").
-
 - **Date the onset against the HA history before blaming traffic.**
   `grep "Moved from state" tmp/cli/logs/show_log_system.txt` — a CPU that
   jumps from ~2 % (week buckets of resource-monitor) to 60–80 % on the day
@@ -638,27 +620,9 @@ box sized for the load, and which part of the DP eats the time.
   (`flow_ip_cksm_sw_validation` / `flow_tcp_cksm_sw_validation` ≈
   `pkt_recv`, a steady `pkt_recv_skip_inflight`), but don't claim MMAP
   causes the software checksum unless you have a DPDK baseline.
-  **Find out why, per boot:**
-  - `var/log/pan/pan_vm_plugin.log` lists `Intf ethN - Hwaddr … Driver
-    …` for each NIC, then the decision: `Setting to DPDK`, or `Interfaces
-    are not of same drv type` → `Setting to pktmmap`. On Azure, a NIC
-    showing only `hv_netvsc` with no `mlx5_core` twin has no accelerated
-    networking. One such NIC, often one added later, forces the whole
-    firewall to MMAP. **Pair the twins by MAC, not by name**: the VF
-    usually shows up as `Intf panos_ethN … mlx5_core`, but before the
-    rename it can take a free plain name (`Intf eth6 - Hwaddr <same MAC as
-    eth5> Driver mlx5_core`). So grep `Intf (panos_)?eth`, never just
-    `Intf eth`, or every NIC looks synthetic-only. An `ethN` whose MAC
-    shows up only in the later boot is a NIC added between the two boots.
-    The plugin's timezone can change between boots (`-0800` then `+0200`).
-  - Do **not** cite `pktmmapvmconfig.cfgdb.xml` in `sysd.log` as proof of
-    MMAP. sysd loads it at every boot, including a boot where the plugin
-    logged `Setting to DPDK`.
-  - Cross-check `var/log/pan/brdagent.log` (`Initialized interfaces in
-    DPDK|PKTMMAP mode`) and `sdb.txt` (`cfg.platform.vm.set.dpdk-pkt-io-disable`:
-    `True` means an admin disabled DPDK; read `peer.cfg.pktio.pkt-io-mode`
-    for the peer).
-  - Compare boots to date the change.
+  **Find out why, per boot**: `pan_vm_plugin.log` records the decision
+  and the NIC that forced it — TSF-GUIDE §4, row "VM-Series in
+  PacketMMAP instead of DPDK".
 - **Compute-bound or buffer-bound? Decide before hunting "the offending
   session".**
   - Read packet buffer and descriptor max values in `show running
@@ -705,6 +669,23 @@ box sized for the load, and which part of the DP eats the time.
   [application <app>]` then `show session id <id>`, `show running
   resource-monitor second last 60` during a burst, and ACC / traffic logs
   top destinations by bytes since the onset.
+- **Per-process % in dp-monitor `processes`/`top` is not DP load.** On the
+  PA-3200 (Cavium) `all_pktproc_*`, `flow_ctrl`, `flow_mgmt` and
+  `pktlog_forwarding` show 94–100 % in every snapshot — busy-polling —
+  including on a node that stayed **passive** for days, while
+  `> show running resource-monitor` on that node reads 1–3 %. "pktproc
+  pinned at 100 % while passive = deadlock" is a misreading. Prove it with
+  the passive peer's dp-monitor, and quote resource-monitor (or the
+  resource-monitor dump embedded in each `--- panio` block) as the load.
+  The raw `processes` lines carry no timestamp; date them from the
+  enclosing `<ts>  --- processes` header.
+- **In HA, an error on the suspect node is a cause only if the peer lacks
+  it.** Count the same pattern per day on both TSFs. If the counts match,
+  it is background noise. When the active node "loses traffic" with links
+  up, use the HA2 cross-check (TSF-GUIDE, per-problem table): the active's
+  `ha_msg_sent` rate against the passive's `pkt_recv`. Then localize the
+  loss with the CPU-vs-MAC counters of `show counter interface all` on
+  both ends of HA2 (TSF-GUIDE, "where frames are lost").
 
 ## Step 4 — the config
 
