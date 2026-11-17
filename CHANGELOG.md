@@ -6,6 +6,14 @@ version follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `SKILL.md`, Active/Active verdict: high HA3 load no longer always means
+  "asymmetric path". HA3 that jumps at a member's return and then decays
+  in steps means sessions stranded on the peer since the failback; the fix
+  is to clear those sessions, not to change routing. Marked as not yet
+  seen on an archive.
+
 ## [1.4.0] — 2026-11-17
 
 ### Added

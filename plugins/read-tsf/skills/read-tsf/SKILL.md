@@ -628,11 +628,23 @@ box sized for the load, and which part of the DP eats the time.
      all` exactly. On the PA-5430 pair HA3 carried 91 k packets against
      31.7 G received (0.0003 %). The A/A cost there was **HA2 sync**
      (`ha_session_update_msg_sent` 34 k/s), not HA3.
-  Verdict: high HA3 on one member = asymmetric path (return traffic lands
-  on the non-owner), to fix upstream. Negligible HA3 but every setup on
-  one member = upstream sends everything to that member. Balanced setups
-  with unequal CPU = different traffic per member (compare `show running
-  application statistics`), not HA.
+  Verdict: read the **shape over time** of `ha_aa_pktfwd_*` in the
+  `--- panio` series, not only its level.
+  - HA3 high and flat = asymmetric path (return traffic lands on the
+    non-owner), to fix upstream.
+  - HA3 that jumps when a member comes back (`Moved from state` in
+    `show_log_system.txt`, links up) and then **decays in steps** =
+    ownership stranded by the failback. A session keeps its owner for
+    life: what the peer set up during the outage stays with the peer, and
+    the returning member forwards it over HA3 until it closes. Long flows
+    (BGP peerings across a vwire, tunnels, replication) keep it going for
+    days. The owner's CPU stays high while its own ports go quiet. The fix
+    is to clear those sessions, not to change routing. This shape follows
+    from the owner rule; no archive shows it yet.
+  - Negligible HA3 but every setup on one member = upstream sends
+    everything to that member.
+  - Balanced setups with unequal CPU = different traffic per member
+    (compare `show running application statistics`), not HA.
   Unverified: the setup rules `ip-modulo`/`ip-hash`/`primary-device` and
   the HA3 traffic they add were not on any archive. Read the rule, and
   treat what it does as a hypothesis until counters show it.
