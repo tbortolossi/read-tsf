@@ -6,6 +6,8 @@ version follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.1] — 2026-11-17
+
 ### Fixed
 
 - `SKILL.md`, Active/Active verdict: high HA3 load no longer always means
