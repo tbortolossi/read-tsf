@@ -8,6 +8,17 @@ version follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `SKILL.md`, DP CPU section: Active/Active. Read the setup and owner
+  rules, measure the setup and ownership split per member with
+  `ha_aa_session_setup_local` and `ha_session_setup_msg_sent`, and measure
+  HA3 load with `ha_aa_pktfwd_xmt`/`_rcv` against `pkt_recv`. Compare rates,
+  never since-boot totals. Verdicts: asymmetric path, everything sent to
+  one member, or different traffic per member. Verified on a PA-5430
+  A/A pair (11.1).
+- `TSF-GUIDE.md` §3: Active/Active map. Where the rules are, in the CLI
+  and in the merged config; the setup, owner and HA3 counters; how the
+  HA3 port's unicast counters match `ha_aa_pktfwd_*`; the dated series
+  from the `--- panio` blocks of `dp-monitor.log*`. §4: a row pointing to it.
 - `SKILL.md`, GlobalProtect row: nginx's connection counter in
   `sslvpn_access.log` shows client connections that never reach the portal.
 

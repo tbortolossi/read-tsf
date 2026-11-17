@@ -605,7 +605,37 @@ box sized for the load, and which part of the DP eats the time.
   mostly the **active period only** — check that bytes ÷ days-active
   matches `show session info` throughput before quoting them as a rate.
   Ask for the peer's TSF: same load on the peer at a lower CPU = sizing
-  difference between members.
+  difference between members. In Active/Active there is no such
+  transition: use the next point.
+- **Active/Active: measure who sets up, who owns and what crosses HA3
+  before comparing the two CPUs.** Read both TSFs, and compare **rates**
+  (the `rate` column, the delta sections, `--- panio` series), never
+  since-boot totals: the members' uptimes differ (21 h against 70 days on
+  the PA-5430 pair). Map and series: TSF-GUIDE §3, "Active/Active".
+  1. *The rules* — `Session Owner Selection Session Processing Rule` and
+     `… Session Setup Rule` in `> show high-availability all`.
+     `first-packet` for both means the member that receives the first packet
+     sets up and owns the session. The split is then decided upstream (ECMP,
+     LACP hash, floating-IP `device-priority`), not by the firewall.
+  2. *Setup and ownership split* — `ha_aa_session_setup_local` = setups
+     done here; `ha_session_setup_msg_sent` = sessions this member owns
+     and syncs; its peer's `…_msg_recv` mirrors it. On the PA-5430 pair one
+     member set up 1 117/s and the other 0 in the same minute: A/A in
+     name, A/P in fact.
+  3. *HA3 load* — `ha_aa_pktfwd_xmt` / `ha_aa_pktfwd_rcv`, packets sent
+     to / received from the owner over HA3, against `pkt_recv`. They match
+     the HA3 port's `tx-unicast`/`rx-unicast` in `show counter interface
+     all` exactly. On the PA-5430 pair HA3 carried 91 k packets against
+     31.7 G received (0.0003 %). The A/A cost there was **HA2 sync**
+     (`ha_session_update_msg_sent` 34 k/s), not HA3.
+  Verdict: high HA3 on one member = asymmetric path (return traffic lands
+  on the non-owner), to fix upstream. Negligible HA3 but every setup on
+  one member = upstream sends everything to that member. Balanced setups
+  with unequal CPU = different traffic per member (compare `show running
+  application statistics`), not HA.
+  Unverified: the setup rules `ip-modulo`/`ip-hash`/`primary-device` and
+  the HA3 traffic they add were not on any archive. Read the rule, and
+  treat what it does as a hypothesis until counters show it.
 - **VM-Series sizing — the licence caps the cores, not the VM.** Compare
   `vm-license` / `vm-cpu-count` in `show system info` with the CPU count
   and model the hypervisor gives (`dmesg`, platform info): a `VM-SERIES-4`
