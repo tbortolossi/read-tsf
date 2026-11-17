@@ -6,6 +6,11 @@ version follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `SKILL.md`, GlobalProtect row: nginx's connection counter in
+  `sslvpn_access.log` shows client connections that never reach the portal.
+
 ## [1.3.0] — 2026-10-04
 
 ### Added
