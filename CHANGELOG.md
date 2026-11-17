@@ -6,6 +6,8 @@ version follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-11-17
+
 ### Added
 
 - `SKILL.md`, DP CPU section: Active/Active. Read the setup and owner
