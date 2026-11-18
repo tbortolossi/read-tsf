@@ -6,6 +6,8 @@ version follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.1] — 2026-11-18
+
 ### Changed
 
 - `SKILL.md` trimmed from 66 KB to 57 KB, with no verdict changed. The
