@@ -619,6 +619,10 @@ box sized for the load, and which part of the DP eats the time.
      `first-packet` for both means the member that receives the first packet
      sets up and owns the session. The split is then decided upstream (ECMP,
      LACP hash, floating-IP `device-priority`), not by the firewall.
+     With `primary-device` the `… Session Setup Rule` line is **absent**
+     (setup is an option of `first-packet` only): an empty grep is not a
+     parse error. Compare `Device-id` across a member's successive TSFs: a
+     swap of device-id and priority is a role change (TSF-GUIDE §3).
   2. *Setup and ownership split* — `ha_aa_session_setup_local` = setups
      done here; `ha_session_setup_msg_sent` = sessions this member owns
      and syncs; its peer's `…_msg_recv` mirrors it. On the PA-5430 pair one
@@ -634,22 +638,30 @@ box sized for the load, and which part of the DP eats the time.
   `--- panio` series, not only its level.
   - HA3 high and flat = asymmetric path (return traffic lands on the
     non-owner), to fix upstream.
-  - HA3 that jumps when a member comes back (`Moved from state` in
-    `show_log_system.txt`, links up) and then **decays in steps** =
-    ownership stranded by the failback. A session keeps its owner for
-    life: what the peer set up during the outage stays with the peer, and
-    the returning member forwards it over HA3 until it closes. Long flows
-    (BGP peerings across a vwire, tunnels, replication) keep it going for
+  - HA3 that jumps at a role change or a member's return (`Moved from
+    state` in `show_log_system.txt`, links up) and then **decays in
+    steps** = ownership stranded on the other member. A session keeps its
+    owner for life, so the receiving member forwards it over HA3 until it
+    closes; long flows (BGP across a vwire, tunnels, replication) last
     days. The owner's CPU stays high while its own ports go quiet. The fix
-    is to clear those sessions, not to change routing. This shape follows
-    from the owner rule; no archive shows it yet.
+    is to clear those sessions, not to change routing. Seen on a PA-3410
+    vwire pair (11.1, `primary-device`): the member with ≈ 0 bytes on its
+    own vwire ports moved 100–350 k pps over HA3 both ways, decaying
+    360 k → 100 k pps over 6 h at 90–98 % DP. `show session info` counts a
+    hairpinned packet twice. Case and signature: TSF-GUIDE §3.
+  - HA3 rcv = xmt on the **primary** while its own vwire ports also carry
+    traffic = `primary-device` with wire traffic on both members: the
+    primary inspects all of it, and the peer's share hairpins over HA3.
+    Onset: Panorama push → `A/A mode device-id overlap` → preemption to
+    Active-Primary (TSF-GUIDE §3). Whether `first-packet` would split the
+    inspection is unverified.
   - Negligible HA3 but every setup on one member = upstream sends
     everything to that member.
   - Balanced setups with unequal CPU = different traffic per member
     (compare `show running application statistics`), not HA.
-  Unverified: the setup rules `ip-modulo`/`ip-hash`/`primary-device` and
-  the HA3 traffic they add were not on any archive. Read the rule, and
-  treat what it does as a hypothesis until counters show it.
+  Unverified: the `ip-modulo`/`ip-hash` setup rules and the HA3 traffic
+  they add. Read the rule, and treat its effect as a hypothesis until
+  counters show it.
 - **VM-Series sizing — the licence caps the cores, not the VM.** Compare
   `vm-license` / `vm-cpu-count` in `show system info` with the CPU count
   and model the hypervisor gives (`dmesg`, platform info): a `VM-SERIES-4`

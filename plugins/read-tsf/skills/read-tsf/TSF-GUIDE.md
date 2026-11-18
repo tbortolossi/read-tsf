@@ -179,6 +179,48 @@ owns the session), `ha_aa_session_vdid_rcv`/`_xmt` (device-binding
 changes), `ha_skip_sess_teardown`. Totals are since boot **of that member**:
 two members with different uptimes are compared on rates only.
 
+The HA3 hairpin (virtual wire, sessions owned by the member that did not
+receive them) shows up as `flow_fwd_fwd_cnt` ≈ `ha_aa_pktfwd_xmt` on the
+receiving member. The owner shows `flow_sw_ct` ≈ `ha_aa_pktfwd_rcv` =
+`ha_aa_pktfwd_xmt`, with ≈ 0 bytes on its own vwire ports. Verified on a
+PA-3410 pair, 11.1. Who swapped roles: in the Panorama template
+(`ptpl="…"` on `device-id`/`device-priority` in
+`.merged-running-config.xml`), and in `ha_agent.log`
+(`Peer device-id configuration not unique`, then `Going to Active-Secondary
+state due to preemption`).
+
+Config shapes of the rules (match `<active-active[ >]`, since a
+Panorama-pushed tag carries `ptpl=`):
+`<session-owner-selection><primary-device/>`, or
+`<session-owner-selection><first-packet><session-setup><first-packet|ip-modulo|ip-hash|primary-device/>`,
+beside `<device-id>` and `election-option/device-priority`. Under
+`primary-device`, `show high-availability all` prints no `Session Setup
+Rule` line.
+
+The PA-3410 case in full (vwire, owner rule `primary-device`, replacing a
+PA-5220 pair; all wire traffic entered member A):
+- **What happened.** Member B became primary twice: briefly while A's
+  links came up, and later after a Panorama push swapped
+  `device-id`/`device-priority` between the two templates. The push shows
+  as `Peer device-id configuration not unique` in `ha_agent.log` and
+  `Last non-functional state reason: A/A mode device-id overlap` on the
+  peer, with the preemption a few minutes later. In
+  `show_log_system.txt`: `commit-all` → `A/A mode device-id overlap`
+  (Non-Functional) → `Active-Secondary → Active-Primary` within ~10 min.
+  The resource-monitor hour buckets jump from 0 to 85–95 % at that hour.
+- **The counters.** B's own vwire ports read ≈ 0 bytes, yet B moved
+  100–350 k pps over HA3 in both directions (`ha_aa_pktfwd_rcv` = `_xmt`,
+  `flow_sw_ct` ≈ the same rate). On A, `flow_fwd_fwd_cnt` ≈
+  `ha_aa_pktfwd_xmt`, and the HA3 `ae` read rx-bytes = tx-bytes. HA2 sync
+  ran beside it: `ha_session_update_msg_sent` ~300 k/s.
+- **The decay.** In the `panio` series, HA3 fell in steps from 360 k to
+  100 k pps over 6 h. `timeout-tcp` was 7210 s, which kept idle flows on
+  their owner.
+- **The traps.** `show session info` Throughput/Packet rate read ~1.7× the
+  old pair's for the same wire traffic, because a hairpinned packet is
+  counted twice. The DP sat at 90–98 %. With `primary-device` and the
+  traffic on one member, any role change hairpins every new session.
+
 ## 4. Daemon logs — which file for which problem
 
 All under `var/log/pan/`. Daemon names are stable across releases, but **some

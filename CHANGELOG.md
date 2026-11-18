@@ -8,8 +8,22 @@ version follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Active/Active with the `primary-device` owner rule, from a PA-3410 vwire
+  pair (11.1). In `SKILL.md`, how to read the rule (the `Session Setup
+  Rule` line is absent) and two verdicts: ownership stranded after a role
+  change, now seen on an archive, and the primary hairpinning the peer's
+  wire share over HA3. In `TSF-GUIDE.md` §3, the hairpin signature
+  (`flow_fwd_fwd_cnt`, `flow_sw_ct`), the config shapes of the rules, and
+  the case in full: a Panorama push that swapped device-id and priority,
+  the stepped decay, and `show session info` counting a hairpinned packet
+  twice.
 - `SKILL.md`, DP planes: a PA-5220 (11.1) runs dp0 only; `opt/var.dp1`/`dp2`
   exist empty and `s1dp1` answers `target-dp invalid`.
+
+### Changed
+
+- `SKILL.md`: `primary-device` is no longer listed as unverified; only
+  `ip-modulo`/`ip-hash` remain.
 
 ## [1.4.1] — 2026-11-17
 
