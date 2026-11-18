@@ -6,6 +6,19 @@ version follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- `SKILL.md` trimmed from 66 KB to 57 KB, with no verdict changed. The
+  per-platform plane layout (multi-DP, CP, log cards, console logs, empty
+  plane directories) moved to `TSF-GUIDE.md` §2, "Planes per platform";
+  `SKILL.md` keeps four rules and a pointer. The Routing, Log forwarding
+  and Panorama rows, the anonymized-TSF section and the cheat-sheet names
+  trap are shortened to what the guide does not already say, and the
+  routing details and the note on old anonymized copies moved to the guide.
+- "Before you finish — feed this file" adds a rule: store the lesson, not
+  the case. The PA-3410 case in `TSF-GUIDE.md` §3 is cut down to its
+  signature and the role-change log sequence accordingly.
+
 ## [1.5.0] — 2026-11-18
 
 ### Added

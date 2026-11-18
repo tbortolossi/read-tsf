@@ -96,6 +96,113 @@ is often only in a rotation** — a daemon that logs 10 MB an hour has rotated
 the interesting hour away by the time the TSF is generated. Always list the
 rotations before concluding "nothing in the log".
 
+### Planes per platform
+
+Chassis platforms have more than one of everything.
+A PA-400/800/1400/3400 or VM has one MP and one DP: `var/log/pan/dp-monitor.log`
+is *the* dataplane — and so does a **PA-5400** (5410–5450, family `5400f`),
+verified on a real PA-5430: no `opt/var.dp*` at all. The **PA-3200 family**
+(3220/3250/3260) is single-DP too but keeps that dataplane's logs under
+**`opt/dpfs/var/log/pan/`** — `dp-monitor.log` and eight rotations,
+`bcm.log`, `brdagent.log`, `bfd.log`, `pan_task_<n>.log`, `md_out.log`
+(~57 files) — and has **no** `var/log/pan/dp-monitor.log` at all (two real
+PA-3220, 11.1.6 and 11.1.14); its DP serial console is
+`var/log/pan/dataplane-console-output.log`. PA-5200/PA-7000 (and older 5000)
+have several planes:
+
+- **Each dataplane logs under its own root**: `opt/var.dp0/log/pan/dp-monitor.log`,
+  `opt/var.dp1/…`, `opt/var.dp2/…` on a PA-5200. A PA-7000 chassis nests the
+  **slot** as well: `opt/var/s<slot>/dp<n>/log/pan/` — a real PA-7080 (family
+  `7000b`) had eleven populated slots (`s1`…`s11`, four DPs each, ~95 files
+  per DP), and `sysd.log`/`sdb.txt` name components `s<slot>.dp<n>`
+  (`cfg.net.s6.eth2@252.acl` = slot 6, interface eth2, VLAN 252). Each DP
+  root may carry `log/pan/memdump/hwbuf-*.raw` — 100 MB hardware-buffer dumps,
+  binary, only for a buffer post-mortem. A slot holds more than dataplanes:
+  `opt/var/s<slot>/cp/` (the card's control processor), and on a PA-7000 the
+  **log processing cards** `opt/var/s<slot>/lfp<n>/log/pan/` — `logrcvr.log`,
+  `syslog-ng.log` (150 MB seen), `lfp-monitor.log` (same sectioned-snapshot
+  format as `dp-monitor.log`), `evtmgr_logrcvr_lfp<n>_snapshot`. On a
+  chassis, a log-forwarding or log-receiver problem lives *there*, not in
+  `var/log/pan/logrcvr.log`. Always `ls -d opt/dpfs opt/var.dp* opt/var/s*/dp* opt/var/s*/lfp*` first, and
+  analyse **per plane, never the aggregate** — on a PA-7000 the classic
+  finding is one line card at 90 % while the others idle (traffic imbalance),
+  invisible in any average. Do not assume which planes exist from the model:
+  an earlier note said a PA-5250 skips dp1, but a real PA-5250 on 11.2 had
+  `opt/var.dp0`, `opt/var.dp1` and `opt/var.dp2` all populated (~80 files
+  each: `dp-monitor.log` + rotations, `dp-sessperf_mon.log`, `brdagent.log`,
+  `bfd.log`, `cgroups*.log`). `ls -d opt/var.dp*` is the only reliable answer;
+  an empty plane directory is still worth a look before calling it normal.
+- **`cp-monitor.log`** exists only on platforms with a dedicated
+  control-plane processor: `opt/var.cp/log/pan/cp-monitor.log` on a
+  PA-5200, **one per slot** at `opt/var/s<slot>/cp/log/pan/cp-monitor.log`
+  on a PA-7000 — never under `var/log/pan/`. Same sectioned-snapshot format
+  (`cpu`, `memory`, `processes`, `cp_stats`, `fabric_traffic_stats`,
+  `bcm_shcmd_stats`, `pci_dma`, `softnet`, `ifconfig`…); it tracks the MP↔DP
+  plumbing: the `cp_stats` block (`sw.mprelay.s1.cp.platform: { netmsg: {
+  errors: { acl_delete, arp_delete, arp_update, … }`) is `netmsg` stats vs
+  **errors** (ARP/MAC sync between MP and DP — `arp_delete` errors ≫ stats =
+  MP/DP desync; `arp_update` errors = DP ARP table full), `ifconfig` TX/RX
+  errors on the internal CP interfaces (config-push and sync failures).
+  Absent on single-chip platforms by design — not a gap. The CP root also
+  holds the switch-fabric logs (`bcm.log`, `bcm_cmd.log` — Broadcom ASIC
+  commands and errors), `cp-telemetry.log`, and
+  `dataplane<n>-console-output.log`, the serial console of each DP as seen
+  from the CP. The MP side keeps the console of the whole card:
+  `var/log/pan/controlplane-console-output.log` on a PA-5200 (`N0.LMC1
+  Configuration Completed: 4096 MB` = memory init at boot),
+  `var/log/pan/slot<n>-console-output.log` and `fpp-console-output.log`
+  (the fabric card) on a PA-7000. Single-chip platforms have no console log
+  except the PA-3200's `dataplane-console-output.log`.
+- **The command dump repeats every dataplane command per DP.** On a chassis
+  each per-DP block opens with `> set system setting target-dp s<slot>dp<n>`
+  — 98 blocks on a PA-7050/7080, 12 on a PA-5250 — so `grep -c "^> show
+  session info"` returning 49 is the layout, not a corrupt file. Index the
+  blocks with `grep -n "^> set system setting target-dp" tmp/cli/techsupport_*.txt`
+  and read the one for the plane you care about; `> show running
+  resource-monitor` is a single header whose output carries `DP s1dp0:`
+  sub-blocks instead. The `packet descriptor (on-chip)` rows appear on the
+  ASIC-fronted families only (PA-3200, 5200, 7000) — their absence on a
+  400/1400/3400/5400 is normal, and row *presence* is a self-maintaining
+  platform test. Analyse buffer/descriptor rows per DP: the classic chassis
+  finding is one DP at 90 %+ while the chassis median idles below 10 % (a
+  session pinned to a DP), invisible in any pooled view —
+  `> show session distribution statistics` is the one-call per-DP
+  session-count denominator that separates per-session weight from
+  distribution failure. On a PA-7000, `> show chassis status` maps card
+  types and the `Traffic enabled slots` line says which slots are real:
+  per-slot directories exist for **all** slots regardless, the dump carries
+  `target-dp` blocks for nonexistent DPs too, and **targeting an unpopulated
+  DP silently returns another plane's data** (identical counter values
+  across empty slots) — never read a per-DP block for a slot that is not
+  traffic-enabled. `> show counter global` on a chassis returns the
+  near-identical chassis aggregate in every `target-dp` block, and
+  `> show session info` prints a single `target-dp: *.*` aggregate; per-DP
+  attribution comes from resource-monitor and pool statistics, not from
+  those two. `hwbuf-*.raw` present in a DP's `memdump/` marks that DP as
+  having had a hardware-buffer stall event. More existence wrinkles: a
+  PA-5430 TSF can ship an **empty `opt/dpfs/` directory skeleton** (check
+  for files before rerouting the analysis), a PA-5220 (11.1) runs dp0 only
+  (`opt/var.dp1`/`dp2` exist with 0 files, `s1dp1` → `target-dp invalid`),
+  and a PA-5250 on 11.2 can run
+  only dp0/dp1 — `target-dp s1dp2` answers `Server error : target-dp
+  invalid` while `opt/var.dp2` exists with an empty `log/pan/`; trust the
+  error, not the directory. On the PA-1400 and the PA-3250 (11.1), `dpc_nica_stats` prints `NICA
+  FPGA not available`, `bcm_g_cntr_stats` is broken (Python
+  `SyntaxError`) and mp-monitor
+  `fvif_stats` is empty — per-interface history on that family exists only
+  in `> show counter interface all` at snapshot time. On the PA-3200,
+  `pan_task_*.log` at debug level rotates in ~1–2 minutes (70k lines/min
+  seen; the live file can span < 30 s) — for proxy/timer/policy-lookup
+  warnings grep all `pan_task_*.log*` and treat an empty result before the
+  last rotation as "window lost", never "no errors";
+  `opt/dpfs/var/log/pan/packetbuffer.log.log` names every pool with
+  sizes/thresholds at boot.
+- `sysd.log` names components per plane (`s1.dp0`, `s1.mp`), and
+  `show running resource-monitor` in the techsupport txt repeats its blocks
+  per slot/DP on a chassis — check which DP a block belongs to before
+  comparing numbers. MIPS-based DPs (5200/7000) at 80 % are more saturated
+  than x86 at 80 % — lower per-core headroom.
+
 ## 3. Where to start: the techsupport txt
 
 `tmp/cli/techsupport_<hostname>_<date>.txt` is ~20 000 lines of `> command`
@@ -197,29 +304,15 @@ beside `<device-id>` and `election-option/device-priority`. Under
 `primary-device`, `show high-availability all` prints no `Session Setup
 Rule` line.
 
-The PA-3410 case in full (vwire, owner rule `primary-device`, replacing a
-PA-5220 pair; all wire traffic entered member A):
-- **What happened.** Member B became primary twice: briefly while A's
-  links came up, and later after a Panorama push swapped
-  `device-id`/`device-priority` between the two templates. The push shows
-  as `Peer device-id configuration not unique` in `ha_agent.log` and
-  `Last non-functional state reason: A/A mode device-id overlap` on the
-  peer, with the preemption a few minutes later. In
-  `show_log_system.txt`: `commit-all` → `A/A mode device-id overlap`
-  (Non-Functional) → `Active-Secondary → Active-Primary` within ~10 min.
-  The resource-monitor hour buckets jump from 0 to 85–95 % at that hour.
-- **The counters.** B's own vwire ports read ≈ 0 bytes, yet B moved
-  100–350 k pps over HA3 in both directions (`ha_aa_pktfwd_rcv` = `_xmt`,
-  `flow_sw_ct` ≈ the same rate). On A, `flow_fwd_fwd_cnt` ≈
-  `ha_aa_pktfwd_xmt`, and the HA3 `ae` read rx-bytes = tx-bytes. HA2 sync
-  ran beside it: `ha_session_update_msg_sent` ~300 k/s.
-- **The decay.** In the `panio` series, HA3 fell in steps from 360 k to
-  100 k pps over 6 h. `timeout-tcp` was 7210 s, which kept idle flows on
-  their owner.
-- **The traps.** `show session info` Throughput/Packet rate read ~1.7× the
-  old pair's for the same wire traffic, because a hairpinned packet is
-  counted twice. The DP sat at 90–98 %. With `primary-device` and the
-  traffic on one member, any role change hairpins every new session.
+A role change pushed from Panorama (PA-3410, 11.1) reads, in order:
+`commit-all` → `A/A mode device-id overlap` (Non-Functional; `Last
+non-functional state reason` on the peer, `Peer device-id configuration not
+unique` in `ha_agent.log`) → `Active-Secondary → Active-Primary` within
+~10 min in `show_log_system.txt`, with the resource-monitor hour buckets
+jumping at that hour. Two readings to carry from it: the HA3 decay is paced
+by session timeouts (`timeout-tcp` in the config), and `show session info`
+Throughput/Packet rate counts a hairpinned packet twice (~1.7× the wire
+traffic there), so compare it with the wire ports, not with the old pair.
 
 ## 4. Daemon logs — which file for which problem
 
@@ -242,7 +335,7 @@ writes `ikemgr-ng.log` while `ikemgr.log` stays present and idle; same for
 | GlobalProtect | `gpsvc.log`, `sslvpn-access/sslvpn-access.log`, `sslvpn_ngx_error.log`, `show_log_globalprotect.txt` (can be the biggest text file of the TSF — 64 MB seen; one row per portal/gateway event, columns: time, gateway/portal, status, event, region, `domain\user`) | `rasmgr.log`, `authd.log`, `sslmgr.log` (certs); `var/log/pan/sslvpn-access/sslvpn-task.log*.gz` are **binary** per-request records (`strings`/`grep -a`) |
 | authentication (admin, GP, captive portal) | `authd.log` | `useridd.log` for group mapping, `sslmgr.log` for cert-based auth |
 | User-ID | `useridd.log`, `distributord.log`, `redis_useridd.log` | `> show user …` sections |
-| routing | `routed.log` (legacy) or `var/log/pan/frr/` (`frr_export.log`, `ns<N>_frr_export.log` per logical router) + `etc/frr/` (advanced routing) | `> show routing …` / `> show advanced-routing …` (on an ARE box the classic sections only say `Command deprecated` — use the advanced ones); `bfd.log` for BFD. Time dimension: RIB `age` per learned route; SPF runs and path-monitor Up/Down in `routed.log`; LSDB `Age`/seq. No per-prefix add/delete history and no system logdb in the archive. |
+| routing | `routed.log` (legacy) or `var/log/pan/frr/` (`frr_export.log`, `ns<N>_frr_export.log` per logical router) + `etc/frr/` (advanced routing) | `> show routing …` / `> show advanced-routing …` (on an ARE box the classic sections only say `Command deprecated` — use the advanced ones); `bfd.log` for BFD. Time dimension: RIB `age` per learned route; SPF runs and path-monitor Up/Down in `routed.log`; LSDB `Age`/seq. No per-prefix add/delete history and no system logdb in the archive. Details: on ARE, one `ns<N>_frr_export.log` / `ns<N>_frr_reload.log` per logical router (header `#LR:<name> (<n>)`, then `YYYY/MM/DD HH:MM:SS ZEBRA: …` lines) plus `are_migration.log`. `qtrace_routed.log` lines read `NNNNNNNN [YYYY-MM-DD HH:MM:SS.tttt] [func:line]`. RIB `age 2036` = path (re)installed 34 min before the snapshot. `routed.log`+`.log.old` (~20 h): `TM_SPF: start full SPF calculation` (one per topology change), `MON: status update monitor(vr X: a > b) Down/Up` (path-monitor flaps toggling static routes). LSDB `Seq Number` `0x8000BB9A` ≈ 48 k re-originations is a churn fingerprint. |
 | interfaces / links | `pan_ifmgr.log`, `brdagent.log` (port/ASIC faults), `l2ctrld.log` | `> show interface all`, `show system environmentals` |
 | performance / drops | `mp-monitor.log`, `dp-monitor.log` (under `opt/dpfs/var/log/pan/` on a PA-3200, per plane on a chassis), `dp-sessperf_mon.log` | `> show running resource-monitor`, `show counter global filter delta yes`, `debug dataplane pool statistics` |
 | content / AV updates | `paninstaller_content.log`, `curlog_out_*`, `contentd.log`, `md_*.log` | `> request content upgrade info`, `opt/pancfg/mgmt/global/*info.xml` |
@@ -252,7 +345,7 @@ writes `ikemgr-ng.log` while `ikemgr.log` stays present and idle; same for
 | SNMP polling | `snmpd.log` | `Unable to fetch <sysd key>` / `No counter node` = the daemon could not read the value the NMS asked for — an OID that stopped answering without the box being down |
 | device health monitors | `sysdagent.log` | one timed cycle per check, each with a `result:` — `MONITOR: Disk space check`, `MONITOR: Certificate expiry check completed. Expired certificates found: N`, `MONITOR: Backup status check`. The dated history behind a health alarm |
 | certificates / keystore | `sslmgr.log`, `cryptod.log` (`Id:<name> not found in keystore`, master-key changes), `device_certgen.log`, `dsms-certificates.log` | `> show device-certificate status`; `sysdagent.log` for the expiry count over time |
-| MP ↔ DP plumbing | `mprelay.log`, `pan_comm_0.log` (the message bus; an error count in the thousands is the signal, not one line), `pan_dha.log` (dataplane HA agent) | `cp-monitor.log` `cp_stats` on platforms that have a CP (SKILL.md, step 2b) |
+| MP ↔ DP plumbing | `mprelay.log`, `pan_comm_0.log` (the message bus; an error count in the thousands is the signal, not one line), `pan_dha.log` (dataplane HA agent) | `cp-monitor.log` `cp_stats` on platforms that have a CP (§2, "Planes per platform") |
 | daemon supervision / startup | `sysd.log`, `supervisor.log` (`*** Supervisor process is initializing system ***` = a full MP restart), `md-startscript.log`, `mgmt_fb.log` | `mp-monitor.log` PID changes; `opt/panrepo/logs/reboot.log`. There is **no** `masterd.log` on 10.2–12.1 |
 | time sync | `var/log/ntpstats/loopstats` (offset, drift), `peerstats` (per peer) | dates are Modified Julian Days: `date -d "1858-11-17 + <MJD> days"`. Sub-ms offset = timestamps across the archive are comparable; a step of seconds re-bases every correlation |
 | SD-WAN / LSVPN / tunnels | `sdwand.log`, `satd.log` (satellite), `tund.log` | `> show sdwan …`, the `network/sdwan` subtree of the config |
@@ -325,8 +418,9 @@ config/
 
 Panorama-managed devices carry the pushed part in `.merged-running-config.xml`
 and the raw push in `opt/pancfg/mgmt/tmp/panorama_pushed/` (`newsp.xml`,
-`lastsp.xml`, `mergesp.xml`, `pushsp.xml`, the `*-push-request.xml`
-requests; 12.x adds `before-` and `after-sp-imported.xml`).
+`lastsp.xml`, `mergesp.xml`, `pushsp.xml`, `predefined.xml`, and the
+requests `sp-push-request.xml` and `tpl-push-request.xml`; 12.x adds
+`before-` and `after-sp-imported.xml`).
 `running-config.xml` alone is then incomplete.
 
 On a Panorama-managed device, `opt/pancfg/mgmt/template/` and
@@ -403,3 +497,12 @@ anonymized normally (`saNN` → `sarNN`, `rule-hit-count.bin` →
 except `wtmp`/`btmp`/`lastlog`: the admin login history is the one thing an
 anonymized archive no longer carries — `show_log_system.txt` and `authd.log`
 cover the same question.
+
+**Over-anonymization on old copies.** Archives made by earlier versions
+replaced common English words inside command echoes and fixed output
+(`> show chassis inventory` → `> show chassis user72321`, `Connection
+status: up` → `user51283`) and pseudonymized interface names inside zone
+`<member>` elements. Both are fixed, but a copy you are handed may predate
+the fix — **prefer structural greps (section markers, counter names, `X/Y`
+fractions) over long fixed English strings**, and treat an empty
+fixed-string grep on an old copy as possibly mangled, not absent.
