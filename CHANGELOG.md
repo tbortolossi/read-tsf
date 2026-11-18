@@ -6,6 +6,8 @@ version follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-11-18
+
 ### Added
 
 - Active/Active with the `primary-device` owner rule, from a PA-3410 vwire
