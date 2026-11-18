@@ -301,7 +301,9 @@ have several planes:
   those two. `hwbuf-*.raw` present in a DP's `memdump/` marks that DP as
   having had a hardware-buffer stall event. More existence wrinkles: a
   PA-5430 TSF can ship an **empty `opt/dpfs/` directory skeleton** (check
-  for files before rerouting the analysis), and a PA-5250 on 11.2 can run
+  for files before rerouting the analysis), a PA-5220 (11.1) runs dp0 only
+  (`opt/var.dp1`/`dp2` exist with 0 files, `s1dp1` → `target-dp invalid`),
+  and a PA-5250 on 11.2 can run
   only dp0/dp1 — `target-dp s1dp2` answers `Server error : target-dp
   invalid` while `opt/var.dp2` exists with an empty `log/pan/`; trust the
   error, not the directory. On the PA-1400 and the PA-3250 (11.1), `dpc_nica_stats` prints `NICA

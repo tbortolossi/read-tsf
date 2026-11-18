@@ -6,6 +6,11 @@ version follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `SKILL.md`, DP planes: a PA-5220 (11.1) runs dp0 only; `opt/var.dp1`/`dp2`
+  exist empty and `s1dp1` answers `target-dp invalid`.
+
 ## [1.4.1] — 2026-11-17
 
 ### Fixed
