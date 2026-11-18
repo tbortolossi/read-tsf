@@ -66,7 +66,7 @@ example. Git history is permanent.
 ## What belongs in which file
 
 `SKILL.md` is loaded into the model's context in full, every time the skill
-triggers — around 55 KB today. Every addition to it is paid for on every
+triggers. Keep it under ~55 KB: every addition is paid for on every
 analysis, so it holds the **method**: the reading order, the traps, the P0
 symptom table, the doctrine for buffers and counters.
 
@@ -76,6 +76,18 @@ every secondary domain, the config structure, the anonymization mapping.
 
 When one gains a section, check whether the other needs a line. When
 something could live in either, it goes in the guide.
+
+**A case is not stored; what it changed is.** A real analysis feeds the
+skill only through what it taught:
+
+- `SKILL.md` gets a verdict that changed or a trap that made a reading go
+  wrong: one to three lines, with a one-line proof (model, PAN-OS version)
+  and a pointer to the guide.
+- `TSF-GUIDE.md` gets the map: the file, the counter, the command, the
+  signature.
+- Neither gets the story: the timeline, the per-case numbers, the
+  narrative. That belongs in the analysis report, outside the repository.
+  A case that only confirms an existing verdict changes nothing.
 
 ## Evidence discipline
 
